@@ -1,0 +1,366 @@
+{% extends "base.html" %}
+
+{% block title %}Jobs - Stockbit Scraper{% endblock %}
+
+{% block content %}
+<div class="jobs">
+    <h2>Jobs Management</h2>
+    
+    <!-- Create new job form -->
+    <div class="section">
+        <h3>Create New Job</h3>
+        <form id="create-job-form" class="form">
+            <div class="form-group">
+                <label for="tickers">Stock Tickers</label>
+                <textarea id="tickers" name="tickers" rows="3" class="form-control" 
+                          placeholder="Enter tickers (one per line)&#10;Example:&#10;BIRD&#10;BBCA&#10;TLKM" required></textarea>
+                <small>Enter one ticker per line (e.g., BIRD, BBCA, TLKM)</small>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="from-date">From Date</label>
+                    <input type="date" id="from-date" name="from_date" class="form-control" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="until-date">Until Date</label>
+                    <input type="date" id="until-date" name="until_date" class="form-control" required>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="delay">Request Delay (seconds)</label>
+                    <input type="number" id="delay" name="delay_seconds" value="3" 
+                           min="0" max="60" step="0.5" class="form-control">
+                    <small>Delay after each completed task (0 = no delay)</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="limit">Records Per Page</label>
+                    <input type="number" id="limit" name="limit" value="50" 
+                           min="10" max="200" step="10" class="form-control">
+                    <small>How many trades per API request (max 200)</small>
+                </div>
+            </div>
+            
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="parallel-workers">Parallel Workers 🚀</label>
+                    <input type="number" id="parallel-workers" name="parallel_workers" value="1" 
+                           min="1" max="10" class="form-control">
+                    <small>Process multiple stocks simultaneously (1-10 workers)</small>
+                </div>
+            </div>
+            
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Create Job</button>
+            </div>
+        </form>
+    </div>
+    
+    <!-- Jobs list -->
+    <div class="section">
+        <div class="section-header">
+            <h3>All Jobs</h3>
+            <button onclick="loadJobs()" class="btn btn-secondary">Refresh</button>
+        </div>
+        <div id="jobs-list" class="jobs-list">
+            <div class="loading">Loading jobs...</div>
+        </div>
+    </div>
+</div>
+
+<!-- Job details modal -->
+<div id="job-modal" class="modal">
+    <div class="modal-content modal-large">
+        <div class="modal-header">
+            <h2>Job Details</h2>
+            <span class="close" onclick="closeJobModal()">&times;</span>
+        </div>
+        <div class="modal-body">
+            <div id="job-details-content">
+                <div class="loading">Loading...</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let jobsRefreshInterval;
+
+// Load defaults from localStorage
+function loadDefaults() {
+    const delay = localStorage.getItem('default_delay') || '3';
+    const limit = localStorage.getItem('default_limit') || '50';
+    
+    document.getElementById('delay').value = delay;
+    document.getElementById('limit').value = limit;
+}
+
+// Create job
+document.getElementById('create-job-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const formData = {
+        tickers: document.getElementById('tickers').value,
+        from_date: document.getElementById('from-date').value,
+        until_date: document.getElementById('until-date').value,
+        delay_seconds: document.getElementById('delay').value,
+        limit: document.getElementById('limit').value,
+        parallel_workers: document.getElementById('parallel-workers').value
+    };
+    
+    fetch('/api/jobs/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData)
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            showNotification('Job created successfully!', 'success');
+            this.reset();
+            loadDefaults();
+            loadJobs();
+        } else {
+            showNotification('Failed to create job: ' + (data.error || 'Unknown error'), 'error');
+        }
+    })
+    .catch(err => {
+        showNotification('Request failed: ' + err.message, 'error');
+    });
+});
+
+// Load all jobs
+function loadJobs() {
+    fetch('/api/jobs')
+        .then(r => r.json())
+        .then(data => {
+            const jobs = data.jobs || [];
+            const container = document.getElementById('jobs-list');
+            
+            if (jobs.length === 0) {
+                container.innerHTML = '<div class="empty-state">No jobs yet. Create one above!</div>';
+                return;
+            }
+            
+            container.innerHTML = jobs.map(job => {
+                const progress = job.progress || {};
+                const percentage = progress.percentage || 0;
+                
+                return `
+                    <div class="job-card">
+                        <div class="job-header">
+                            <div>
+                                <span class="job-id">${job.job_id.substring(0, 8)}</span>
+                                <span class="status-badge status-${job.status.toLowerCase()}">${job.status}</span>
+                            </div>
+                            <div class="job-actions">
+                                ${job.status === 'RUNNING' ? 
+                                    `<button onclick="pauseJob('${job.job_id}')" class="btn-icon">⏸</button>` : ''}
+                                ${job.status === 'PAUSED' ? 
+                                    `<button onclick="resumeJob('${job.job_id}')" class="btn-icon">▶</button>` : ''}
+                                ${job.status === 'RUNNING' || job.status === 'PAUSED' || job.status === 'QUEUED' ? 
+                                    `<button onclick="cancelJob('${job.job_id}')" class="btn-icon">✕</button>` : ''}
+                                <button onclick="showJobDetails('${job.job_id}')" class="btn-icon">ℹ</button>
+                            </div>
+                        </div>
+                        <div class="job-info">
+                            <strong>Tickers:</strong> ${job.tickers.join(', ')}
+                        </div>
+                        <div class="job-info">
+                            <strong>Period:</strong> ${job.from_date} to ${job.until_date}
+                        </div>
+                        <div class="job-info">
+                            <strong>Created:</strong> ${new Date(job.created_at).toLocaleString()} ${job.parallel_workers > 1 ? `🚀 ${job.parallel_workers}x parallel` : ''}
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width: ${percentage}%"></div>
+                        </div>
+                        <div class="job-stats">
+                            ✓ ${progress.completed || 0} completed &nbsp;
+                            ⟳ ${progress.running || 0} running &nbsp;
+                            ✗ ${progress.failed || 0} failed &nbsp;
+                            ⋯ ${progress.pending || 0} pending
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        })
+        .catch(err => {
+            console.error('Failed to load jobs:', err);
+        });
+}
+
+function pauseJob(jobId) {
+    fetch(`/api/jobs/${jobId}/pause`, { method: 'POST' })
+        .then(r => r.json())
+        .then(() => {
+            showNotification('Job paused', 'success');
+            loadJobs();
+        });
+}
+
+function resumeJob(jobId) {
+    fetch(`/api/jobs/${jobId}/resume`, { method: 'POST' })
+        .then(r => r.json())
+        .then(() => {
+            showNotification('Job resumed', 'success');
+            loadJobs();
+        });
+}
+
+function cancelJob(jobId) {
+    if (!confirm('Are you sure you want to cancel this job?')) return;
+    
+    fetch(`/api/jobs/${jobId}/cancel`, { method: 'POST' })
+        .then(r => r.json())
+        .then(() => {
+            showNotification('Job cancelled', 'warning');
+            loadJobs();
+        });
+}
+
+let jobDetailsInterval;
+
+function showJobDetails(jobId) {
+    const modal = document.getElementById('job-modal');
+    const content = document.getElementById('job-details-content');
+    
+    modal.style.display = 'block';
+    content.innerHTML = '<div class="loading">Loading job details...</div>';
+    
+    // clear any existing interval
+    if (jobDetailsInterval) {
+        clearInterval(jobDetailsInterval);
+    }
+    
+    // load details immediately
+    loadJobDetails(jobId, content);
+    
+    // refresh every 2 seconds if job is running
+    jobDetailsInterval = setInterval(() => {
+        loadJobDetails(jobId, content);
+    }, 2000);
+}
+
+function loadJobDetails(jobId, content) {
+    fetch(`/api/jobs/${jobId}`)
+        .then(r => r.json())
+        .then(job => {
+            const progress = job.progress || {};
+            
+            // group tasks by ticker
+            const tasksByTicker = {};
+            job.tasks.forEach(task => {
+                if (!tasksByTicker[task.ticker]) {
+                    tasksByTicker[task.ticker] = [];
+                }
+                tasksByTicker[task.ticker].push(task);
+            });
+            
+            content.innerHTML = `
+                <div class="job-details">
+                    <div class="detail-section">
+                        <h3>Job Information</h3>
+                        <div class="detail-row">
+                            <strong>Job ID:</strong> ${job.job_id}
+                        </div>
+                        <div class="detail-row">
+                            <strong>Status:</strong> 
+                            <span class="status-badge status-${job.status.toLowerCase()}">${job.status}</span>
+                        </div>
+                        <div class="detail-row">
+                            <strong>Progress:</strong> ${progress.completed}/${progress.total} tasks
+                        </div>
+                        <div class="detail-row">
+                            <strong>Created:</strong> ${new Date(job.created_at).toLocaleString()}
+                        </div>
+                        ${job.started_at ? `
+                            <div class="detail-row">
+                                <strong>Started:</strong> ${new Date(job.started_at).toLocaleString()}
+                            </div>
+                        ` : ''}
+                        ${job.completed_at ? `
+                            <div class="detail-row">
+                                <strong>Completed:</strong> ${new Date(job.completed_at).toLocaleString()}
+                            </div>
+                        ` : ''}
+                    </div>
+                    
+                    <div class="detail-section">
+                        <h3>Tasks by Ticker</h3>
+                        ${Object.entries(tasksByTicker).map(([ticker, tasks]) => {
+                            const tickerCompleted = tasks.filter(t => t.status === 'COMPLETED').length;
+                            const tickerFailed = tasks.filter(t => t.status === 'FAILED').length;
+                            
+                            return `
+                                <div class="ticker-tasks">
+                                    <h4>${ticker} (${tickerCompleted}/${tasks.length} completed)</h4>
+                                    <div class="tasks-grid">
+                                        ${tasks.map(task => {
+                                            let statusDisplay = task.status;
+                                            let progressInfo = '';
+                                            
+                                            if (task.status === 'RUNNING' && task.current_page > 0) {
+                                                statusDisplay = `RUNNING (Page ${task.current_page})`;
+                                                progressInfo = task.records_fetched > 0 ? 
+                                                    `<span class="task-count">📊 ${task.records_fetched} records so far...</span>` : '';
+                                            } else if (task.records_fetched > 0) {
+                                                progressInfo = `<span class="task-count">${task.records_fetched} records (${task.pages_fetched || 1} pages)</span>`;
+                                            }
+                                            
+                                            return `
+                                                <div class="task-item task-${task.status.toLowerCase()}">
+                                                    <span class="task-date">${task.date}</span>
+                                                    <span class="task-status">${statusDisplay}</span>
+                                                    ${progressInfo}
+                                                    ${task.error ? 
+                                                        `<span class="task-error" title="${task.error}">⚠</span>` : ''}
+                                                </div>
+                                            `;
+                                        }).join('')}
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+            `;
+        })
+        .catch(err => {
+            content.innerHTML = `<div class="alert alert-error">Failed to load job details: ${err.message}</div>`;
+        });
+}
+
+function closeJobModal() {
+    document.getElementById('job-modal').style.display = 'none';
+    
+    // stop refreshing when modal closes
+    if (jobDetailsInterval) {
+        clearInterval(jobDetailsInterval);
+        jobDetailsInterval = null;
+    }
+}
+
+// Click outside modal to close
+window.onclick = function(event) {
+    const jobModal = document.getElementById('job-modal');
+    if (event.target === jobModal) {
+        closeJobModal();
+    }
+}
+
+// Initialize
+loadDefaults();
+loadJobs();
+jobsRefreshInterval = setInterval(loadJobs, 5000);
+
+window.addEventListener('beforeunload', () => {
+    if (jobsRefreshInterval) clearInterval(jobsRefreshInterval);
+});
+</script>
+{% endblock %}
+

@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block title %}Files - Stockbit Scraper{% endblock %}
+
+{% block content %}
+<div class="files">
+    <h2>Output Files</h2>
+    
+    <div class="section">
+        <div class="section-header">
+            <h3>CSV Files</h3>
+            <button onclick="loadFiles()" class="btn btn-secondary">Refresh</button>
+        </div>
+        
+        <div id="files-list" class="files-list">
+            <div class="loading">Loading files...</div>
+        </div>
+    </div>
+</div>
+
+<script>
+function loadFiles() {
+    fetch('/api/files')
+        .then(r => r.json())
+        .then(data => {
+            const files = data.files || [];
+            const container = document.getElementById('files-list');
+            
+            if (files.length === 0) {
+                container.innerHTML = '<div class="empty-state">No files yet. Complete a job to generate CSV files.</div>';
+                return;
+            }
+            
+            container.innerHTML = `
+                <table class="files-table">
+                    <thead>
+                        <tr>
+                            <th>Filename</th>
+                            <th>Size</th>
+                            <th>Modified</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${files.map(file => {
+                            const sizeKB = (file.size_bytes / 1024).toFixed(2);
+                            const modified = new Date(file.modified).toLocaleString();
+                            
+                            return `
+                                <tr>
+                                    <td><code>${file.filename}</code></td>
+                                    <td>${sizeKB} KB</td>
+                                    <td>${modified}</td>
+                                    <td>
+                                        <a href="/api/files/download/${file.filename}" 
+                                           class="btn btn-small btn-primary" download>
+                                            Download
+                                        </a>
+                                    </td>
+                                </tr>
+                            `;
+                        }).join('')}
+                    </tbody>
+                </table>
+            `;
+        })
+        .catch(err => {
+            console.error('Failed to load files:', err);
+            document.getElementById('files-list').innerHTML = 
+                `<div class="alert alert-error">Failed to load files: ${err.message}</div>`;
+        });
+}
+
+// Load files on page load
+loadFiles();
+</script>
+{% endblock %}
+

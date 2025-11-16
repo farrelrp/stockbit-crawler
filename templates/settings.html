@@ -1,0 +1,229 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - Stockbit Running Trade Scraper{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1>Settings</h1>
+    
+    <!-- Token Management -->
+    <div class="card mt-4">
+        <div class="card-header">
+            <h3>Bearer Token</h3>
+        </div>
+        <div class="card-body">
+            <div class="alert alert-info">
+                <strong>How to get your Bearer token:</strong>
+                <ol>
+                    <li>Login to <a href="https://stockbit.com/login" target="_blank">Stockbit.com</a> in your browser</li>
+                    <li>Open Developer Tools (F12)</li>
+                    <li>Go to the Network tab</li>
+                    <li>Look for any API request (like to <code>exodus.stockbit.com</code>)</li>
+                    <li>Find the <code>Authorization</code> header and copy the token (without the "Bearer " prefix)</li>
+                </ol>
+            </div>
+            
+            <div id="token-status-display" class="mb-3">
+                <!-- will be filled by JS -->
+            </div>
+            
+            <form id="token-form">
+                <div class="mb-3">
+                    <label for="bearer-token" class="form-label">Bearer Token:</label>
+                    <textarea 
+                        id="bearer-token" 
+                        class="form-control" 
+                        rows="4" 
+                        placeholder="Paste your Bearer token here..."
+                        required
+                    ></textarea>
+                    <small class="text-muted">
+                        This is the JWT token from the Authorization header
+                    </small>
+                </div>
+                
+                <button type="submit" class="btn btn-primary">
+                    <i class="fas fa-save"></i> Save Token
+                </button>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Job Defaults -->
+    <div class="card mt-4">
+        <div class="card-header">
+            <h3>Job Defaults</h3>
+        </div>
+        <div class="card-body">
+            <form id="defaults-form">
+                <div class="mb-3">
+                    <label for="default-delay" class="form-label">
+                        Delay Between Requests (seconds):
+                    </label>
+                    <input 
+                        type="number" 
+                        id="default-delay" 
+                        class="form-control" 
+                        value="3" 
+                        min="0" 
+                        step="0.5"
+                    >
+                    <small class="text-muted">
+                        Wait time between each API request (helps avoid rate limiting)
+                    </small>
+                </div>
+                
+                <div class="mb-3">
+                    <label for="default-limit" class="form-label">
+                        Records Per Request:
+                    </label>
+                    <input 
+                        type="number" 
+                        id="default-limit" 
+                        class="form-control" 
+                        value="50" 
+                        min="1" 
+                        max="200"
+                    >
+                    <small class="text-muted">
+                        Number of records to fetch per request (max 200)
+                    </small>
+                </div>
+                
+                <button type="submit" class="btn btn-primary">
+                    <i class="fas fa-save"></i> Save Defaults
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+// load token status on page load
+document.addEventListener('DOMContentLoaded', () => {
+    checkTokenStatus();
+    loadDefaults();
+});
+
+function checkTokenStatus() {
+    fetch('/api/token/status')
+        .then(res => res.json())
+        .then(data => {
+            const statusDiv = document.getElementById('token-status-display');
+            
+            if (data.valid) {
+                const timeLeft = Math.floor(data.time_until_expiry / 60);
+                statusDiv.innerHTML = `
+                    <div class="alert alert-success">
+                        <strong><i class="fas fa-check-circle"></i> Token is valid</strong><br>
+                        Expires in ${timeLeft} minutes
+                    </div>
+                `;
+            } else if (data.expired) {
+                statusDiv.innerHTML = `
+                    <div class="alert alert-danger">
+                        <strong><i class="fas fa-exclamation-circle"></i> Token expired</strong><br>
+                        Please enter a new token below
+                    </div>
+                `;
+            } else {
+                statusDiv.innerHTML = `
+                    <div class="alert alert-warning">
+                        <strong><i class="fas fa-exclamation-triangle"></i> No token set</strong><br>
+                        Please enter your Bearer token below
+                    </div>
+                `;
+            }
+        })
+        .catch(err => {
+            console.error('Failed to check token status:', err);
+        });
+}
+
+// handle token form submission
+document.getElementById('token-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    
+    const token = document.getElementById('bearer-token').value.trim();
+    
+    if (!token) {
+        showNotification('Please enter a token', 'error');
+        return;
+    }
+    
+    // submit token
+    fetch('/api/token/set', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ token })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.success) {
+            let message = 'Token saved successfully!';
+            if (data.resumed_jobs && data.resumed_jobs > 0) {
+                message += ` ${data.resumed_jobs} paused job(s) resumed!`;
+            }
+            showNotification(message, 'success');
+            document.getElementById('bearer-token').value = '';
+            checkTokenStatus();
+        } else {
+            showNotification('Failed to save token: ' + data.error, 'error');
+        }
+    })
+    .catch(err => {
+        showNotification('Network error: ' + err.message, 'error');
+    });
+});
+
+// load defaults
+function loadDefaults() {
+    const saved = localStorage.getItem('job_defaults');
+    if (saved) {
+        try {
+            const defaults = JSON.parse(saved);
+            document.getElementById('default-delay').value = defaults.delay || 3;
+            document.getElementById('default-limit').value = defaults.limit || 50;
+        } catch (e) {
+            console.error('Failed to load defaults:', e);
+        }
+    }
+}
+
+// save defaults
+document.getElementById('defaults-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    
+    const defaults = {
+        delay: parseFloat(document.getElementById('default-delay').value),
+        limit: parseInt(document.getElementById('default-limit').value)
+    };
+    
+    localStorage.setItem('job_defaults', JSON.stringify(defaults));
+    showNotification('Defaults saved!', 'success');
+});
+
+function showNotification(message, type) {
+    // simple notification
+    const alertClass = type === 'success' ? 'alert-success' : 'alert-danger';
+    const icon = type === 'success' ? 'check-circle' : 'exclamation-circle';
+    
+    const notification = document.createElement('div');
+    notification.className = `alert ${alertClass} alert-dismissible fade show position-fixed top-0 start-50 translate-middle-x mt-3`;
+    notification.style.zIndex = '9999';
+    notification.innerHTML = `
+        <i class="fas fa-${icon}"></i> ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    
+    document.body.appendChild(notification);
+    
+    setTimeout(() => {
+        notification.remove();
+    }, 5000);
+}
+</script>
+
+{% endblock %}

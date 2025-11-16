@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block title %}404 Not Found - Stockbit Scraper{% endblock %}
+
+{% block content %}
+<div class="section" style="text-align: center; padding: 4rem 2rem;">
+    <h1 style="font-size: 4rem; color: var(--text-secondary);">404</h1>
+    <h2>Page Not Found</h2>
+    <p style="color: var(--text-secondary); margin: 1rem 0;">
+        The page you're looking for doesn't exist.
+    </p>
+    <a href="{{ url_for('index') }}" class="btn btn-primary">Go to Dashboard</a>
+</div>
+{% endblock %}
+

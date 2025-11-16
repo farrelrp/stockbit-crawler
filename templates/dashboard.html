@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Stockbit Scraper{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <h2>Dashboard</h2>
+    
+    <!-- Quick stats -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <h3>Active Jobs</h3>
+            <div class="stat-value" id="stat-active-jobs">-</div>
+        </div>
+        <div class="stat-card">
+            <h3>Completed Jobs</h3>
+            <div class="stat-value" id="stat-completed-jobs">-</div>
+        </div>
+        <div class="stat-card">
+            <h3>CSV Files</h3>
+            <div class="stat-value" id="stat-files">-</div>
+        </div>
+        <!-- NO AUTH NEEDED! -->
+        <!-- <div class="stat-card">
+            <h3>Token Status</h3>
+            <div class="stat-value" id="stat-token-status">-</div>
+        </div> -->
+        <div class="stat-card">
+            <h3>Status</h3>
+            <div class="stat-value" style="color: var(--success-color);">✓ Ready</div>
+        </div>
+    </div>
+
+    <!-- Recent jobs -->
+    <div class="section">
+        <div class="section-header">
+            <h3>Recent Jobs</h3>
+            <a href="{{ url_for('jobs_page') }}" class="btn btn-secondary">View All</a>
+        </div>
+        <div id="recent-jobs-list" class="jobs-list">
+            <div class="loading">Loading jobs...</div>
+        </div>
+    </div>
+
+    <!-- Recent logs -->
+    <div class="section">
+        <div class="section-header">
+            <h3>Recent Activity</h3>
+            <button onclick="refreshLogs()" class="btn btn-secondary">Refresh</button>
+        </div>
+        <div class="log-viewer">
+            <div id="logs-container" class="logs-list">
+                <div class="loading">Loading logs...</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Dashboard-specific code
+let logsRefreshInterval;
+let jobsRefreshInterval;
+
+function loadDashboard() {
+    loadStats();
+    loadRecentJobs();
+    loadLogs();
+    
+    // auto refresh every 5 seconds
+    logsRefreshInterval = setInterval(loadLogs, 5000);
+    jobsRefreshInterval = setInterval(loadRecentJobs, 5000);
+}
+
+function loadStats() {
+    // load job stats
+    fetch('/api/jobs')
+        .then(r => r.json())
+        .then(data => {
+            const jobs = data.jobs || [];
+            const active = jobs.filter(j => j.status === 'RUNNING' || j.status === 'QUEUED').length;
+            const completed = jobs.filter(j => j.status === 'COMPLETED').length;
+            
+            document.getElementById('stat-active-jobs').textContent = active;
+            document.getElementById('stat-completed-jobs').textContent = completed;
+        });
+    
+    // load file count
+    fetch('/api/files')
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('stat-files').textContent = (data.files || []).length;
+        });
+    
+    // token status already handled by global refresh
+}
+
+function loadRecentJobs() {
+    fetch('/api/jobs')
+        .then(r => r.json())
+        .then(data => {
+            const jobs = data.jobs || [];
+            const container = document.getElementById('recent-jobs-list');
+            
+            if (jobs.length === 0) {
+                container.innerHTML = '<div class="empty-state">No jobs yet. <a href="/jobs">Create one</a>!</div>';
+                return;
+            }
+            
+            // show last 5 jobs
+            const recentJobs = jobs.slice(0, 5);
+            
+            container.innerHTML = recentJobs.map(job => {
+                const progress = job.progress || {};
+                const percentage = progress.percentage || 0;
+                
+                return `
+                    <div class="job-card">
+                        <div class="job-header">
+                            <span class="job-id">${job.job_id.substring(0, 8)}</span>
+                            <span class="status-badge status-${job.status.toLowerCase()}">${job.status}</span>
+                        </div>
+                        <div class="job-info">
+                            <strong>Tickers:</strong> ${job.tickers.join(', ')}
+                        </div>
+                        <div class="job-info">
+                            <strong>Period:</strong> ${job.from_date} to ${job.until_date}
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width: ${percentage}%"></div>
+                        </div>
+                        <div class="job-stats">
+                            ${progress.completed || 0}/${progress.total || 0} tasks completed
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        })
+        .catch(err => {
+            console.error('Failed to load jobs:', err);
+        });
+}
+
+function loadLogs() {
+    fetch('/api/logs?limit=50')
+        .then(r => r.json())
+        .then(data => {
+            const logs = data.logs || [];
+            const container = document.getElementById('logs-container');
+            
+            if (logs.length === 0) {
+                container.innerHTML = '<div class="empty-state">No logs yet</div>';
+                return;
+            }
+            
+            container.innerHTML = logs.map(log => {
+                const time = new Date(log.timestamp).toLocaleTimeString();
+                const levelClass = log.level.toLowerCase();
+                
+                return `
+                    <div class="log-entry log-${levelClass}">
+                        <span class="log-time">${time}</span>
+                        <span class="log-level">${log.level}</span>
+                        <span class="log-message">${escapeHtml(log.message)}</span>
+                    </div>
+                `;
+            }).join('');
+            
+            // auto scroll to bottom
+            container.scrollTop = container.scrollHeight;
+        })
+        .catch(err => {
+            console.error('Failed to load logs:', err);
+        });
+}
+
+function refreshLogs() {
+    loadLogs();
+    showNotification('Logs refreshed', 'success');
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// cleanup on page unload
+window.addEventListener('beforeunload', () => {
+    if (logsRefreshInterval) clearInterval(logsRefreshInterval);
+    if (jobsRefreshInterval) clearInterval(jobsRefreshInterval);
+});
+
+// start dashboard
+loadDashboard();
+</script>
+{% endblock %}
+

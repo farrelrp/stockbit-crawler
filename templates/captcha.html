@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+
+{% block title %}Captcha - Stockbit Scraper{% endblock %}
+
+{% block content %}
+<div class="captcha">
+    <h2>Captcha Required</h2>
+    
+    <div class="section">
+        <div id="captcha-status" class="captcha-status">
+            <div class="loading">Checking for captcha...</div>
+        </div>
+        
+        <div id="captcha-form-container" style="display: none;">
+            <div class="captcha-display">
+                <div id="captcha-image-container"></div>
+            </div>
+            
+            <form id="captcha-form" class="form">
+                <div class="form-group">
+                    <label for="captcha-answer">Enter Captcha Code</label>
+                    <input type="text" id="captcha-answer" name="answer" 
+                           class="form-control" placeholder="Enter the code shown above" required>
+                </div>
+                
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">Submit Captcha</button>
+                    <button type="button" onclick="checkCaptcha()" class="btn btn-secondary">Refresh Status</button>
+                </div>
+            </form>
+            
+            <div id="captcha-result" class="result-message"></div>
+        </div>
+        
+        <div class="help-text">
+            <h4>What to do:</h4>
+            <ol>
+                <li>Look at the captcha image above</li>
+                <li>Type the code you see in the input field</li>
+                <li>Click Submit to continue</li>
+                <li>If successful, you'll be able to resume fetching data</li>
+            </ol>
+        </div>
+    </div>
+</div>
+
+<script>
+function checkCaptcha() {
+    fetch('/api/captcha/status')
+        .then(r => r.json())
+        .then(data => {
+            const statusDiv = document.getElementById('captcha-status');
+            const formContainer = document.getElementById('captcha-form-container');
+            
+            if (data.captcha_required && data.captcha_data) {
+                statusDiv.innerHTML = '<div class="alert alert-warning">⚠ Captcha verification required</div>';
+                formContainer.style.display = 'block';
+                
+                // display captcha image or HTML
+                const imageContainer = document.getElementById('captcha-image-container');
+                
+                if (data.captcha_data.image_url) {
+                    imageContainer.innerHTML = `<img src="${data.captcha_data.image_url}" alt="Captcha" class="captcha-image">`;
+                } else if (data.captcha_data.html) {
+                    imageContainer.innerHTML = data.captcha_data.html;
+                } else {
+                    imageContainer.innerHTML = '<div class="alert alert-info">Captcha data received. Please check browser console for details.</div>';
+                    console.log('Captcha data:', data.captcha_data);
+                }
+            } else {
+                statusDiv.innerHTML = '<div class="alert alert-success">✓ No captcha required at the moment</div>';
+                formContainer.style.display = 'none';
+            }
+        })
+        .catch(err => {
+            document.getElementById('captcha-status').innerHTML = 
+                `<div class="alert alert-error">Failed to check captcha status: ${err.message}</div>`;
+        });
+}
+
+// Submit captcha
+document.getElementById('captcha-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const answer = document.getElementById('captcha-answer').value;
+    const resultDiv = document.getElementById('captcha-result');
+    
+    resultDiv.innerHTML = '<div class="loading">Submitting captcha...</div>';
+    
+    fetch('/api/captcha/solve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ answer: answer })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            resultDiv.innerHTML = '<div class="alert alert-success">✓ Captcha solved successfully! Login complete.</div>';
+            showNotification('Captcha solved successfully', 'success');
+            updateTokenStatus();
+            
+            // redirect to dashboard after a moment
+            setTimeout(() => {
+                window.location.href = '/';
+            }, 2000);
+        } else if (data.captcha_required) {
+            resultDiv.innerHTML = '<div class="alert alert-error">✗ Incorrect captcha. Please try again.</div>';
+            showNotification('Incorrect captcha', 'error');
+            document.getElementById('captcha-answer').value = '';
+            checkCaptcha(); // refresh captcha
+        } else {
+            resultDiv.innerHTML = `<div class="alert alert-error">✗ Failed: ${data.error}</div>`;
+            showNotification('Failed: ' + data.error, 'error');
+        }
+    })
+    .catch(err => {
+        resultDiv.innerHTML = `<div class="alert alert-error">Error: ${err.message}</div>`;
+        showNotification('Request failed', 'error');
+    });
+});
+
+// Check captcha status on load
+checkCaptcha();
+
+// Auto-refresh every 10 seconds
+setInterval(checkCaptcha, 10000);
+</script>
+{% endblock %}
+

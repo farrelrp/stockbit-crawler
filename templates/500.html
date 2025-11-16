@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block title %}500 Server Error - Stockbit Scraper{% endblock %}
+
+{% block content %}
+<div class="section" style="text-align: center; padding: 4rem 2rem;">
+    <h1 style="font-size: 4rem; color: var(--error-color);">500</h1>
+    <h2>Internal Server Error</h2>
+    <p style="color: var(--text-secondary); margin: 1rem 0;">
+        Something went wrong on our end. Please try again later.
+    </p>
+    <a href="{{ url_for('index') }}" class="btn btn-primary">Go to Dashboard</a>
+</div>
+{% endblock %}
+

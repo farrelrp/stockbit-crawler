@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Stockbit Running Trade Scraper{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <!-- Header with navigation and token status -->
+    <header>
+        <div class="container">
+            <div class="header-content">
+                <h1 class="logo">Stockbit Scraper</h1>
+                
+                <nav>
+                    <a href="{{ url_for('index') }}" class="nav-link">Dashboard</a>
+                    <a href="{{ url_for('jobs_page') }}" class="nav-link">Jobs</a>
+                    <a href="{{ url_for('files_page') }}" class="nav-link">Files</a>
+                    <a href="{{ url_for('settings') }}" class="nav-link">Settings</a>
+                </nav>
+                
+                <!-- Token status indicator -->
+                <div id="token-indicator" class="token-indicator" onclick="window.location.href='/settings'">
+                    <span id="token-status-text">Checking...</span>
+                    <span id="token-status-icon" class="status-icon">●</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main content area -->
+    <main class="container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Token details modal -->
+    <div id="token-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Token Status</h2>
+                <span class="close" onclick="closeTokenModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="token-details">
+                    <div class="detail-row">
+                        <strong>Status:</strong>
+                        <span id="modal-status" class="status-badge">-</span>
+                    </div>
+                    <div class="detail-row">
+                        <strong>Token:</strong>
+                        <code id="modal-token">-</code>
+                    </div>
+                    <div class="detail-row">
+                        <strong>Issued At:</strong>
+                        <span id="modal-issued">-</span>
+                    </div>
+                    <div class="detail-row">
+                        <strong>Expires At:</strong>
+                        <span id="modal-expires">-</span>
+                    </div>
+                    <div class="detail-row">
+                        <strong>Time Remaining:</strong>
+                        <span id="modal-remaining">-</span>
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button onclick="refreshToken()" class="btn btn-primary">Refresh Token Now</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Global notification area -->
+    <div id="notification-area"></div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>
+
