@@ -7,16 +7,19 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from pathlib import Path
 import json
+import time
 
 from config import (
     SECRET_KEY, DEBUG, LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
-    LOG_MEMORY_LINES, DEFAULT_DELAY_SECONDS, DEFAULT_LIMIT
+    LOG_MEMORY_LINES, DEFAULT_DELAY_SECONDS, DEFAULT_LIMIT, ORDERBOOK_DIR
 )
 from auth import TokenManager
 from stockbit_client import StockbitClient
 from storage import CSVStorage
 from jobs import JobManager
 from orderbook_manager import OrderbookManager
+from perspective_server import start_perspective_server, get_perspective_server
+from replay_engine import get_replay_engine
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -65,6 +68,19 @@ stockbit_client = StockbitClient(token_manager)
 csv_storage = CSVStorage()
 job_manager = JobManager(stockbit_client, csv_storage)
 orderbook_manager = OrderbookManager(token_manager)
+
+# Initialize Perspective server and replay engine
+perspective_server = None
+replay_engine = None
+
+def init_perspective():
+    """Initialize Perspective server and replay engine (call after app starts)"""
+    global perspective_server, replay_engine
+    if perspective_server is None:
+        perspective_server = start_perspective_server(port=8888)
+        table = perspective_server.get_table()
+        replay_engine = get_replay_engine(table)
+        logger.info("Perspective server and replay engine initialized")
 
 # In-memory log storage for UI
 log_buffer = []
@@ -117,6 +133,26 @@ def files_page():
 def orderbook_page():
     """Orderbook streaming page"""
     return render_template('orderbook.html')
+
+@app.route('/replay')
+def replay_page():
+    """Market Replay visualization page"""
+    return render_template('market_replay.html')
+
+@app.route('/replay/debug')
+def replay_debug_page():
+    """Debug console for troubleshooting replay issues"""
+    return render_template('replay_debug.html')
+
+@app.route('/replay/test')
+def replay_test_page():
+    """Test Perspective CDN loading"""
+    return render_template('test_perspective.html')
+
+@app.route('/replay/simple')
+def replay_simple_page():
+    """Simple orderbook view without Perspective (emergency fallback)"""
+    return render_template('simple_orderbook.html')
 
 # ===== API ENDPOINTS =====
 
@@ -343,6 +379,317 @@ def api_orderbook_stop_stream(session_id):
     else:
         return jsonify(result), 400
 
+# --- Market Replay ---
+
+@app.route('/api/replay/files', methods=['GET'])
+def api_replay_list_files():
+    """List available orderbook CSV files for replay"""
+    try:
+        orderbook_dir = ORDERBOOK_DIR
+        csv_files = sorted(orderbook_dir.glob('*.csv'), reverse=True)
+        
+        files = []
+        for csv_file in csv_files:
+            # Parse filename: YYYY-MM-DD_TICKER.csv
+            parts = csv_file.stem.split('_')
+            if len(parts) >= 2:
+                date = parts[0]
+                ticker = parts[1]
+            else:
+                date = 'unknown'
+                ticker = csv_file.stem
+            
+            files.append({
+                'filename': csv_file.name,
+                'path': str(csv_file),
+                'date': date,
+                'ticker': ticker,
+                'size_mb': round(csv_file.stat().st_size / 1024 / 1024, 2)
+            })
+        
+        return jsonify({
+            'success': True,
+            'files': files
+        })
+    except Exception as e:
+        logger.error(f"Error listing replay files: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/replay/load', methods=['POST'])
+def api_replay_load():
+    """Load a CSV file for replay"""
+    if not replay_engine:
+        init_perspective()
+    
+    # Stop any running replay before loading new data
+    if replay_engine and replay_engine.running:
+        logger.info("Stopping existing replay before loading new file")
+        replay_engine.stop()
+        time.sleep(0.2)  # Brief delay to ensure thread stops
+    
+    data = request.get_json() or {}
+    csv_path = data.get('csv_path')
+    
+    if not csv_path:
+        return jsonify({
+            'success': False,
+            'error': 'csv_path required'
+        }), 400
+    
+    result = replay_engine.load_csv(csv_path)
+    
+    if result.get('success'):
+        return jsonify(result)
+    else:
+        return jsonify(result), 400
+
+@app.route('/api/replay/start', methods=['POST'])
+def api_replay_start():
+    """Start replay playback"""
+    if not replay_engine:
+        return jsonify({
+            'success': False,
+            'error': 'Replay engine not initialized'
+        }), 400
+    
+    data = request.get_json() or {}
+    speed_multiplier = float(data.get('speed_multiplier', 1.0))
+    
+    result = replay_engine.start(speed_multiplier=speed_multiplier)
+    
+    if result.get('success'):
+        return jsonify(result)
+    else:
+        return jsonify(result), 400
+
+@app.route('/api/replay/pause', methods=['POST'])
+def api_replay_pause():
+    """Pause replay playback"""
+    if not replay_engine:
+        return jsonify({
+            'success': False,
+            'error': 'Replay engine not initialized'
+        }), 400
+    
+    result = replay_engine.pause()
+    
+    if result.get('success'):
+        return jsonify(result)
+    else:
+        return jsonify(result), 400
+
+@app.route('/api/replay/resume', methods=['POST'])
+def api_replay_resume():
+    """Resume replay playback"""
+    if not replay_engine:
+        return jsonify({
+            'success': False,
+            'error': 'Replay engine not initialized'
+        }), 400
+    
+    result = replay_engine.resume()
+    
+    if result.get('success'):
+        return jsonify(result)
+    else:
+        return jsonify(result), 400
+
+@app.route('/api/replay/stop', methods=['POST'])
+def api_replay_stop():
+    """Stop replay playback"""
+    if not replay_engine:
+        return jsonify({
+            'success': False,
+            'error': 'Replay engine not initialized'
+        }), 400
+    
+    result = replay_engine.stop()
+    
+    if result.get('success'):
+        return jsonify(result)
+    else:
+        return jsonify(result), 400
+
+@app.route('/api/replay/seek', methods=['POST'])
+def api_replay_seek():
+    """Seek to a specific position in the replay"""
+    if not replay_engine:
+        return jsonify({
+            'success': False,
+            'error': 'Replay engine not initialized'
+        }), 400
+    
+    data = request.get_json() or {}
+    position = data.get('position')
+    
+    if position is None:
+        return jsonify({
+            'success': False,
+            'error': 'position required'
+        }), 400
+    
+    try:
+        position = int(position)
+    except ValueError:
+        return jsonify({
+            'success': False,
+            'error': 'position must be an integer'
+        }), 400
+    
+    result = replay_engine.seek(position)
+    
+    if result.get('success'):
+        return jsonify(result)
+    else:
+        return jsonify(result), 400
+
+@app.route('/api/replay/speed', methods=['POST'])
+def api_replay_set_speed():
+    """Set replay speed multiplier"""
+    if not replay_engine:
+        return jsonify({
+            'success': False,
+            'error': 'Replay engine not initialized'
+        }), 400
+    
+    data = request.get_json() or {}
+    multiplier = data.get('multiplier')
+    
+    if multiplier is None:
+        return jsonify({
+            'success': False,
+            'error': 'multiplier required'
+        }), 400
+    
+    try:
+        multiplier = float(multiplier)
+    except ValueError:
+        return jsonify({
+            'success': False,
+            'error': 'multiplier must be a number'
+        }), 400
+    
+    result = replay_engine.set_speed(multiplier)
+    
+    if result.get('success'):
+        return jsonify(result)
+    else:
+        return jsonify(result), 400
+
+@app.route('/api/replay/status', methods=['GET'])
+def api_replay_status():
+    """Get current replay status"""
+    if not replay_engine:
+        return jsonify({
+            'success': True,
+            'status': {
+                'running': False,
+                'csv_loaded': False,
+                'message': 'Replay engine not initialized'
+            }
+        })
+    
+    status = replay_engine.get_status()
+    
+    return jsonify({
+        'success': True,
+        'status': status
+    })
+
+@app.route('/api/replay/data', methods=['GET'])
+def api_replay_get_full_data():
+    """Get ALL data rows for client-side replay"""
+    if not replay_engine or not replay_engine.data_rows:
+        return jsonify({
+            'success': False,
+            'error': 'No data loaded'
+        }), 400
+    
+    # Optimization: return list of lists instead of dicts for smaller payload
+    # Format: [timestamp_ts, price, lots, side (0=bid, 1=offer)]
+    rows = []
+    for row in replay_engine.data_rows:
+        rows.append([
+            row['timestamp'].timestamp() * 1000, # ms timestamp
+            row['price'],
+            row['lots'],
+            0 if row['side'] == 'BID' else 1
+        ])
+    
+    return jsonify({
+        'success': True,
+        'rows': rows,
+        'total_rows': len(rows),
+        'ticker': replay_engine.get_status().get('csv_path', '').split('_')[-1]
+    })
+
+@app.route('/api/replay/orderbook', methods=['GET'])
+def api_get_current_orderbook():
+    """Get current orderbook state for simple view"""
+    if not replay_engine:
+        logger.error("Replay engine not initialized")
+        return jsonify({'success': False, 'error': 'Replay engine not initialized'}), 500
+    
+    # Get current orderbook state from replay engine
+    state = replay_engine.state
+    
+    # Debug logging (first few calls only)
+    if not hasattr(api_get_current_orderbook, 'call_count'):
+        api_get_current_orderbook.call_count = 0
+    api_get_current_orderbook.call_count += 1
+    
+    if api_get_current_orderbook.call_count <= 3:
+        logger.info(f"[DEBUG] Orderbook API call #{api_get_current_orderbook.call_count}: state has {len(state)} entries, running={replay_engine.running}")
+    
+    if not state:
+        return jsonify({
+            'success': True,
+            'bids': [],
+            'offers': [],
+            'total_levels': 0,
+            'running': replay_engine.running,
+            'index': replay_engine.current_index,
+            'total_rows': replay_engine.total_rows
+        })
+    
+    # Separate into bids and offers, sorted
+    bids = []
+    offers = []
+    
+    for (price, side), lots in state.items():
+        if side == 'BID':
+            bids.append({'price': price, 'lots': lots})
+        else:
+            offers.append({'price': price, 'lots': lots})
+    
+    # Sort: bids highest first, offers lowest first
+    bids.sort(key=lambda x: x['price'], reverse=True)
+    offers.sort(key=lambda x: x['price'])
+    
+    # Take top 20 of each
+    bids = bids[:20]
+    offers = offers[:20]
+    
+    # Debug log (first few times with data)
+    if api_get_current_orderbook.call_count <= 5 and (bids or offers):
+        logger.info(f"[DEBUG] Returning {len(bids)} bids, {len(offers)} offers from {len(state)} total levels")
+    
+    return jsonify({
+        'success': True,
+        'bids': bids,
+        'offers': offers,
+        'total_levels': len(state),
+        'running': replay_engine.running,
+        'index': replay_engine.current_index,
+        'total_rows': replay_engine.total_rows,
+        'current_timestamp': replay_engine.current_timestamp.isoformat() if replay_engine.current_timestamp else None,
+        'last_bid_timestamp': replay_engine.last_bid_timestamp.isoformat() if replay_engine.last_bid_timestamp else None,
+        'last_offer_timestamp': replay_engine.last_offer_timestamp.isoformat() if replay_engine.last_offer_timestamp else None
+    })
+
 # --- Logs ---
 
 @app.route('/api/logs', methods=['GET'])
@@ -395,11 +742,18 @@ def server_error(e):
 # ===== MAIN =====
 
 if __name__ == '__main__':
+    import os
+    
     logger.info("Starting Stockbit Running Trade Scraper")
     logger.info(f"Debug mode: {DEBUG}")
     
     # start job worker
     job_manager.start_worker()
+    
+    # Only initialize Perspective in the reloader process (or when debug=False)
+    # This prevents "address already in use" error in debug mode
+    if not DEBUG or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+        init_perspective()
     
     try:
         app.run(host='0.0.0.0', port=5151, debug=DEBUG)
@@ -408,6 +762,10 @@ if __name__ == '__main__':
         logger.info("Shutting down")
         job_manager.stop_worker()
         orderbook_manager.stop_all()
+        if replay_engine:
+            replay_engine.stop()
+        if perspective_server:
+            perspective_server.stop()
 
 
 

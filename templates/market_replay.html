@@ -1,0 +1,778 @@
+{% extends "base.html" %} {% block title %}Market Replay{% endblock %} {% block
+content %}
+<link
+  rel="stylesheet"
+  href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css"
+/>
+<link
+  rel="stylesheet"
+  href="https://cdn.jsdelivr.net/npm/@finos/perspective-viewer@2.10.0/dist/css/themes.css"
+/>
+
+<style>
+  perspective-viewer {
+    height: 700px;
+    width: 100%;
+    border: 2px solid #343a40;
+    border-radius: 0.5rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    font-family: "Courier New", monospace;
+  }
+
+  .controls-panel {
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 0.25rem;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .control-group {
+    margin-bottom: 1rem;
+  }
+
+  .control-group label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: #495057;
+  }
+
+  .btn-group {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .btn {
+    padding: 0.5rem 1rem;
+    border: 1px solid #dee2e6;
+    background: white;
+    border-radius: 0.25rem;
+    cursor: pointer;
+    font-size: 0.875rem;
+    font-weight: 500;
+    transition: all 0.2s;
+  }
+
+  .btn:hover:not(:disabled) {
+    background: #e9ecef;
+    transform: translateY(-1px);
+  }
+
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .btn-primary {
+    background: #007bff;
+    color: white;
+    border-color: #007bff;
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    background: #0056b3;
+  }
+
+  .btn-success {
+    background: #28a745;
+    color: white;
+    border-color: #28a745;
+  }
+
+  .btn-success:hover:not(:disabled) {
+    background: #218838;
+  }
+
+  .btn-danger {
+    background: #dc3545;
+    color: white;
+    border-color: #dc3545;
+  }
+
+  .btn-danger:hover:not(:disabled) {
+    background: #c82333;
+  }
+
+  .btn-warning {
+    background: #ffc107;
+    color: #212529;
+    border-color: #ffc107;
+  }
+
+  .btn-warning:hover:not(:disabled) {
+    background: #e0a800;
+  }
+
+  .status-bar {
+    background: white;
+    border: 1px solid #dee2e6;
+    border-radius: 0.25rem;
+    padding: 1rem;
+    margin-bottom: 1.5rem;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1rem;
+  }
+
+  .status-item {
+    text-align: center;
+  }
+
+  .status-label {
+    font-size: 0.75rem;
+    color: #6c757d;
+    text-transform: uppercase;
+    margin-bottom: 0.25rem;
+  }
+
+  .status-value {
+    font-size: 1.25rem;
+    font-weight: bold;
+    color: #212529;
+  }
+
+  .status-value.active {
+    color: #28a745;
+  }
+
+  .status-value.paused {
+    color: #ffc107;
+  }
+
+  .file-selector {
+    width: 100%;
+    padding: 0.5rem;
+    border: 1px solid #ced4da;
+    border-radius: 0.25rem;
+    font-size: 0.875rem;
+  }
+
+  .speed-control {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .speed-input {
+    width: 80px;
+    padding: 0.5rem;
+    border: 1px solid #ced4da;
+    border-radius: 0.25rem;
+    text-align: center;
+  }
+
+  .speed-presets {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .speed-preset {
+    padding: 0.25rem 0.75rem;
+    border: 1px solid #dee2e6;
+    background: white;
+    border-radius: 0.25rem;
+    cursor: pointer;
+    font-size: 0.75rem;
+  }
+
+  .speed-preset:hover {
+    background: #e9ecef;
+  }
+
+  .progress-bar-container {
+    margin-top: 1rem;
+  }
+
+  .progress-bar {
+    width: 100%;
+    height: 30px;
+    background: #e9ecef;
+    border-radius: 0.25rem;
+    overflow: hidden;
+    cursor: pointer;
+    position: relative;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #007bff, #0056b3);
+    transition: width 0.3s ease;
+  }
+
+  .progress-text {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #212529;
+    font-size: 0.875rem;
+    font-weight: 600;
+  }
+
+  .alert {
+    padding: 0.75rem 1.25rem;
+    margin-bottom: 1rem;
+    border: 1px solid transparent;
+    border-radius: 0.25rem;
+  }
+
+  .alert-info {
+    color: #0c5460;
+    background-color: #d1ecf1;
+    border-color: #bee5eb;
+  }
+
+  .alert-warning {
+    color: #856404;
+    background-color: #fff3cd;
+    border-color: #ffeaa7;
+  }
+
+  .alert-success {
+    color: #155724;
+    background-color: #d4edda;
+    border-color: #c3e6cb;
+  }
+
+  .alert-danger {
+    color: #721c24;
+    background-color: #f8d7da;
+    border-color: #f5c6cb;
+  }
+
+  .d-none {
+    display: none !important;
+  }
+</style>
+
+<div class="container">
+  <h1 class="mb-4">
+    <i class="bi bi-play-circle"></i> Market Replay
+    <a
+      href="/replay/debug"
+      class="btn btn-sm btn-secondary"
+      style="float: right"
+    >
+      <i class="bi bi-bug"></i> Debug Console
+    </a>
+  </h1>
+
+  <div id="alertContainer"></div>
+
+  <div class="controls-panel">
+    <div class="control-group">
+      <label for="fileSelect">
+        <i class="bi bi-file-earmark-spreadsheet"></i> Select Orderbook CSV
+      </label>
+      <select id="fileSelect" class="file-selector">
+        <option value="">Loading files...</option>
+      </select>
+    </div>
+
+    <button id="loadBtn" class="btn btn-primary" onclick="loadFile()">
+      <i class="bi bi-upload"></i> Load File
+    </button>
+  </div>
+
+  <div class="status-bar" id="statusBar">
+    <div class="status-item">
+      <div class="status-label">Status</div>
+      <div class="status-value" id="statusText">Not Loaded</div>
+    </div>
+    <div class="status-item">
+      <div class="status-label">Progress</div>
+      <div class="status-value" id="progressText">0 / 0</div>
+    </div>
+    <div class="status-item">
+      <div class="status-label">Speed</div>
+      <div class="status-value" id="speedText">1.0x</div>
+    </div>
+    <div class="status-item">
+      <div class="status-label">Elapsed</div>
+      <div class="status-value" id="elapsedText">0s</div>
+    </div>
+    <div class="status-item">
+      <div class="status-label">State Size</div>
+      <div class="status-value" id="stateSizeText">0</div>
+    </div>
+  </div>
+
+  <div class="controls-panel" id="playbackControls" style="display: none">
+    <div class="control-group">
+      <label>Playback Controls</label>
+      <div class="btn-group">
+        <button id="startBtn" class="btn btn-success" onclick="startReplay()">
+          <i class="bi bi-play-fill"></i> Start
+        </button>
+        <button
+          id="pauseBtn"
+          class="btn btn-warning"
+          onclick="pauseReplay()"
+          disabled
+        >
+          <i class="bi bi-pause-fill"></i> Pause
+        </button>
+        <button
+          id="resumeBtn"
+          class="btn btn-success"
+          onclick="resumeReplay()"
+          style="display: none"
+        >
+          <i class="bi bi-play-fill"></i> Resume
+        </button>
+        <button
+          id="stopBtn"
+          class="btn btn-danger"
+          onclick="stopReplay()"
+          disabled
+        >
+          <i class="bi bi-stop-fill"></i> Stop
+        </button>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <label>Speed Control</label>
+      <div class="speed-control">
+        <input
+          type="number"
+          id="speedInput"
+          class="speed-input"
+          value="1.0"
+          min="0.1"
+          step="0.1"
+          onchange="updateSpeed()"
+        />
+        <span>x</span>
+        <div class="speed-presets">
+          <button class="speed-preset" onclick="setSpeed(0.5)">0.5x</button>
+          <button class="speed-preset" onclick="setSpeed(1)">1x</button>
+          <button class="speed-preset" onclick="setSpeed(2)">2x</button>
+          <button class="speed-preset" onclick="setSpeed(5)">5x</button>
+          <button class="speed-preset" onclick="setSpeed(10)">10x</button>
+          <button class="speed-preset" onclick="setSpeed(50)">50x</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <label>Progress (Click to Seek)</label>
+      <div class="progress-bar-container">
+        <div
+          class="progress-bar"
+          id="progressBar"
+          onclick="seekFromClick(event)"
+        >
+          <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+          <div class="progress-text" id="progressBarText">0%</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="viewerContainer" style="display: none">
+    <h3 class="mb-3">
+      <i class="bi bi-stack"></i> Live Order Book Ladder
+      <span class="badge bg-success" id="updateIndicator" style="display: none"
+        >LIVE</span
+      >
+    </h3>
+    <div
+      style="
+        background: #f8f9fa;
+        padding: 10px;
+        border-radius: 5px;
+        margin-bottom: 10px;
+      "
+    >
+      <div
+        class="row text-center"
+        style="font-size: 0.875rem; font-weight: 600"
+      >
+        <div class="col-6" style="color: #28a745">
+          <i class="bi bi-arrow-up-circle-fill"></i> BIDS (Buy Orders)
+        </div>
+        <div class="col-6" style="color: #dc3545">
+          <i class="bi bi-arrow-down-circle-fill"></i> OFFERS (Sell Orders)
+        </div>
+      </div>
+    </div>
+    <perspective-viewer id="viewer"></perspective-viewer>
+  </div>
+</div>
+
+<!-- Load Perspective FIRST -->
+<script src="https://cdn.jsdelivr.net/npm/@finos/perspective@2.10.0/dist/cdn/perspective.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@finos/perspective-viewer@2.10.0/dist/cdn/perspective-viewer.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@finos/perspective-viewer-datagrid@2.10.0/dist/cdn/perspective-viewer-datagrid.js"></script>
+
+<!-- Then our application code -->
+<script>
+  console.log("[LOAD] Starting Market Replay initialization...");
+
+  let viewer = null;
+  let statusInterval = null;
+  let fileMetadata = null;
+  let perspectiveReady = false;
+
+  // Wait for Perspective to load
+  function waitForPerspective() {
+    return new Promise((resolve, reject) => {
+      let attempts = 0;
+      const checkInterval = setInterval(() => {
+        attempts++;
+        if (typeof window.perspective !== "undefined") {
+          clearInterval(checkInterval);
+          console.log("[OK] Perspective library loaded");
+          perspectiveReady = true;
+          resolve();
+        } else if (attempts > 50) {
+          clearInterval(checkInterval);
+          reject(
+            new Error(
+              "Perspective failed to load after 5 seconds. Check your internet connection.",
+            ),
+          );
+        }
+      }, 100);
+    });
+  }
+
+  // Initialize
+  async function init() {
+    try {
+      console.log("[INIT] Waiting for Perspective library...");
+      await waitForPerspective();
+
+      console.log("[INIT] Loading file list...");
+      await loadFileList();
+
+      console.log("[INIT] Setting up Perspective viewer...");
+      viewer = document.getElementById("viewer");
+
+      const websocket = await window.perspective.websocket(
+        "ws://localhost:8888/websocket",
+      );
+      console.log("[OK] Connected to Perspective WebSocket");
+
+      const table = await websocket.open_table("orderbook");
+      console.log("[OK] Opened orderbook table");
+
+      await viewer.load(table);
+      console.log("[OK] Loaded table into viewer");
+
+      await viewer.restore({
+        plugin: "Datagrid",
+        columns: ["price", "lots", "change"],
+        split_by: ["side"],
+        sort: [["price", "desc"]],
+        aggregates: {},
+        expressions: {},
+        filter: [],
+      });
+      console.log("[OK] Configured viewer for orderbook ladder");
+
+      let updateCount = 0;
+      table.on_update(() => {
+        updateCount++;
+        const indicator = document.getElementById("updateIndicator");
+        if (indicator) {
+          indicator.style.display = "inline-block";
+          setTimeout(() => {
+            indicator.style.display = "none";
+          }, 200);
+        }
+        if (updateCount % 10 === 0) {
+          console.log(`[UPDATES] Received ${updateCount} table updates`);
+        }
+      });
+
+      console.log("[OK] Update monitoring enabled");
+      startStatusPolling();
+      console.log("[SUCCESS] Initialization complete!");
+    } catch (error) {
+      console.error("[ERROR] Initialization failed:", error);
+      showAlert(
+        "Failed to initialize: " +
+          error.message +
+          " - Try opening /replay/debug for diagnostics",
+        "danger",
+      );
+    }
+  }
+
+  async function loadFileList() {
+    try {
+      const response = await fetch("/api/replay/files");
+      const data = await response.json();
+
+      if (data.success) {
+        const select = document.getElementById("fileSelect");
+        select.innerHTML = '<option value="">-- Select a file --</option>';
+
+        data.files.forEach((file) => {
+          const option = document.createElement("option");
+          option.value = file.path;
+          option.textContent = `${file.date} - ${file.ticker} (${file.size_mb} MB)`;
+          select.appendChild(option);
+        });
+      }
+    } catch (error) {
+      console.error("[ERROR] Error loading files:", error);
+      showAlert("Failed to load file list", "danger");
+    }
+  }
+
+  window.loadFile = async function () {
+    const select = document.getElementById("fileSelect");
+    const csvPath = select.value;
+
+    if (!csvPath) {
+      showAlert("Please select a file", "warning");
+      return;
+    }
+
+    try {
+      console.log("[ACTION] Loading file:", csvPath);
+
+      const response = await fetch("/api/replay/load", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ csv_path: csvPath }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        fileMetadata = data;
+        console.log(`[SUCCESS] Loaded ${data.total_rows} rows`);
+        showAlert(
+          `Loaded ${data.ticker} (${
+            data.date
+          }): ${data.total_rows.toLocaleString()} rows - Ready!`,
+          "success",
+        );
+        document.getElementById("playbackControls").style.display = "block";
+        document.getElementById("viewerContainer").style.display = "block";
+        updateStatus();
+        console.log("[READY] Click START to begin replay");
+      } else {
+        showAlert(data.error || "Failed to load file", "danger");
+        console.error("[ERROR] Load failed:", data.error);
+      }
+    } catch (error) {
+      console.error("[ERROR] Error loading file:", error);
+      showAlert("Error: " + error.message, "danger");
+    }
+  };
+
+  window.startReplay = async function () {
+    const speed = parseFloat(document.getElementById("speedInput").value);
+
+    try {
+      console.log(`[ACTION] Starting replay at ${speed}x speed...`);
+
+      const response = await fetch("/api/replay/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ speed_multiplier: speed }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        document.getElementById("startBtn").disabled = true;
+        document.getElementById("pauseBtn").disabled = false;
+        document.getElementById("stopBtn").disabled = false;
+        document.getElementById("resumeBtn").style.display = "none";
+        showAlert("Replay started - watch the orderbook below!", "success");
+        console.log("[SUCCESS] Replay started");
+      } else {
+        showAlert(data.error || "Failed to start", "danger");
+        console.error("[ERROR]:", data.error);
+      }
+    } catch (error) {
+      console.error("[ERROR]:", error);
+      showAlert("Error: " + error.message, "danger");
+    }
+  };
+
+  window.pauseReplay = async function () {
+    try {
+      const response = await fetch("/api/replay/pause", { method: "POST" });
+      const data = await response.json();
+
+      if (data.success) {
+        document.getElementById("pauseBtn").style.display = "none";
+        document.getElementById("resumeBtn").style.display = "inline-block";
+      }
+    } catch (error) {
+      console.error("[ERROR]:", error);
+    }
+  };
+
+  window.resumeReplay = async function () {
+    try {
+      const response = await fetch("/api/replay/resume", { method: "POST" });
+      const data = await response.json();
+
+      if (data.success) {
+        document.getElementById("pauseBtn").style.display = "inline-block";
+        document.getElementById("resumeBtn").style.display = "none";
+      }
+    } catch (error) {
+      console.error("[ERROR]:", error);
+    }
+  };
+
+  window.stopReplay = async function () {
+    try {
+      const response = await fetch("/api/replay/stop", { method: "POST" });
+      const data = await response.json();
+
+      if (data.success) {
+        document.getElementById("startBtn").disabled = false;
+        document.getElementById("pauseBtn").disabled = true;
+        document.getElementById("stopBtn").disabled = true;
+        document.getElementById("pauseBtn").style.display = "inline-block";
+        document.getElementById("resumeBtn").style.display = "none";
+        showAlert("Replay stopped", "info");
+      }
+    } catch (error) {
+      console.error("[ERROR]:", error);
+    }
+  };
+
+  window.setSpeed = async function (multiplier) {
+    document.getElementById("speedInput").value = multiplier;
+    await updateSpeed();
+  };
+
+  window.updateSpeed = async function () {
+    const multiplier = parseFloat(document.getElementById("speedInput").value);
+
+    try {
+      const response = await fetch("/api/replay/speed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ multiplier }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        document.getElementById("speedText").textContent = multiplier + "x";
+      }
+    } catch (error) {
+      console.error("[ERROR]:", error);
+    }
+  };
+
+  window.seekFromClick = async function (event) {
+    const progressBar = document.getElementById("progressBar");
+    const rect = progressBar.getBoundingClientRect();
+    const clickX = event.clientX - rect.left;
+    const percent = clickX / rect.width;
+
+    if (fileMetadata && fileMetadata.total_rows) {
+      const position = Math.floor(percent * fileMetadata.total_rows);
+      await seekTo(position);
+    }
+  };
+
+  async function seekTo(position) {
+    try {
+      const response = await fetch("/api/replay/seek", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ position }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        showAlert(`Seeked to row ${position}`, "info");
+      } else {
+        showAlert(data.error || "Seek failed", "danger");
+      }
+    } catch (error) {
+      console.error("[ERROR]:", error);
+    }
+  }
+
+  async function updateStatus() {
+    try {
+      const response = await fetch("/api/replay/status");
+      const data = await response.json();
+
+      if (data.success && data.status) {
+        const status = data.status;
+
+        let statusText = "Not Loaded";
+        let statusClass = "";
+
+        if (status.csv_loaded) {
+          if (status.running) {
+            statusText = status.paused ? "PAUSED" : "RUNNING ▶";
+            statusClass = status.paused ? "paused" : "active";
+          } else {
+            statusText = "Ready";
+          }
+        }
+
+        document.getElementById("statusText").textContent = statusText;
+        document.getElementById("statusText").className =
+          "status-value " + statusClass;
+
+        if (status.total_rows > 0) {
+          document.getElementById(
+            "progressText",
+          ).textContent = `${status.current_index} / ${status.total_rows}`;
+
+          const percent = status.progress_percent.toFixed(1);
+          document.getElementById("progressFill").style.width = percent + "%";
+          document.getElementById("progressBarText").textContent =
+            percent + "%";
+        }
+
+        document.getElementById("speedText").textContent =
+          status.speed_multiplier + "x";
+        document.getElementById("elapsedText").textContent =
+          Math.floor(status.elapsed_time) + "s";
+        document.getElementById("stateSizeText").textContent =
+          status.state_size;
+      }
+    } catch (error) {
+      console.error("[ERROR] Status update failed:", error);
+    }
+  }
+
+  function startStatusPolling() {
+    if (statusInterval) clearInterval(statusInterval);
+    statusInterval = setInterval(updateStatus, 500);
+  }
+
+  function showAlert(message, type) {
+    const container = document.getElementById("alertContainer");
+    const alert = document.createElement("div");
+    alert.className = `alert alert-${type}`;
+    alert.textContent = message;
+    container.appendChild(alert);
+
+    setTimeout(() => {
+      alert.remove();
+    }, 5000);
+  }
+
+  // Initialize when page loads
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => {
+      setTimeout(init, 500);
+    });
+  } else {
+    setTimeout(init, 500);
+  }
+</script>
+{% endblock %}

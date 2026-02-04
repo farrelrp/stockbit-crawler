@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Perspective CDN Test</title>
+    <style>
+      body {
+        font-family: monospace;
+        padding: 20px;
+        background: #1a1a1a;
+        color: #00ff00;
+      }
+      .test {
+        margin: 10px 0;
+        padding: 10px;
+        background: #2a2a2a;
+        border-radius: 5px;
+      }
+      .ok {
+        color: #00ff00;
+      }
+      .error {
+        color: #ff0000;
+      }
+      .warning {
+        color: #ffff00;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Perspective CDN Load Test</h1>
+
+    <div class="test">
+      <h3>Test 1: Check if scripts loaded</h3>
+      <div id="test1">Checking...</div>
+    </div>
+
+    <div class="test">
+      <h3>Test 2: Check window.perspective</h3>
+      <div id="test2">Checking...</div>
+    </div>
+
+    <div class="test">
+      <h3>Test 3: Network Tab</h3>
+      <div class="ok">
+        Press F12 and check Network tab for script load errors
+      </div>
+    </div>
+
+    <div class="test">
+      <h3>Test 4: Alternative CDN</h3>
+      <div id="test4">Will try unpkg.com as fallback...</div>
+    </div>
+
+    <!-- Try jsdelivr CDN -->
+    <script
+      src="https://cdn.jsdelivr.net/npm/@finos/perspective@2.10.0/dist/cdn/perspective.js"
+      onload="console.log('jsdelivr perspective loaded')"
+      onerror="console.error('jsdelivr perspective FAILED')"
+    ></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/@finos/perspective-viewer@2.10.0/dist/cdn/perspective-viewer.js"
+      onload="console.log('jsdelivr viewer loaded')"
+      onerror="console.error('jsdelivr viewer FAILED')"
+    ></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/@finos/perspective-viewer-datagrid@2.10.0/dist/cdn/perspective-viewer-datagrid.js"
+      onload="console.log('jsdelivr datagrid loaded')"
+      onerror="console.error('jsdelivr datagrid FAILED')"
+    ></script>
+
+    <script>
+      setTimeout(() => {
+        // Test 1
+        const scriptTags = document.querySelectorAll(
+          'script[src*="perspective"]',
+        );
+        document.getElementById("test1").innerHTML =
+          scriptTags.length > 0
+            ? `<span class="ok">Found ${scriptTags.length} Perspective script tags</span>`
+            : `<span class="error">No Perspective script tags found</span>`;
+
+        // Test 2
+        if (typeof window.perspective !== "undefined") {
+          document.getElementById("test2").innerHTML =
+            `<span class="ok">window.perspective EXISTS!</span><br>` +
+            `<span class="ok">Type: ${typeof window.perspective}</span><br>` +
+            `<span class="ok">Methods: ${Object.keys(window.perspective).join(
+              ", ",
+            )}</span>`;
+        } else {
+          document.getElementById("test2").innerHTML =
+            `<span class="error">window.perspective is UNDEFINED</span><br>` +
+            `<span class="warning">This means scripts didn't load or expose the API correctly</span>`;
+
+          // Try fallback
+          loadFallback();
+        }
+      }, 2000);
+
+      function loadFallback() {
+        document.getElementById("test4").innerHTML =
+          '<span class="warning">Loading from unpkg.com...</span>';
+
+        const script1 = document.createElement("script");
+        script1.src =
+          "https://unpkg.com/@finos/perspective@2.10.0/dist/cdn/perspective.js";
+        script1.onload = () => {
+          console.log("unpkg perspective loaded");
+          document.getElementById("test4").innerHTML +=
+            '<br><span class="ok">unpkg perspective loaded!</span>';
+
+          const script2 = document.createElement("script");
+          script2.src =
+            "https://unpkg.com/@finos/perspective-viewer@2.10.0/dist/cdn/perspective-viewer.js";
+          script2.onload = () => {
+            console.log("unpkg viewer loaded");
+            document.getElementById("test4").innerHTML +=
+              '<br><span class="ok">unpkg viewer loaded!</span>';
+
+            setTimeout(() => {
+              if (typeof window.perspective !== "undefined") {
+                document.getElementById("test4").innerHTML +=
+                  '<br><span class="ok">SUCCESS! window.perspective now exists</span>';
+              } else {
+                document.getElementById("test4").innerHTML +=
+                  '<br><span class="error">STILL FAILED - may need local files</span>';
+              }
+            }, 1000);
+          };
+          script2.onerror = () => {
+            document.getElementById("test4").innerHTML +=
+              '<br><span class="error">unpkg viewer FAILED</span>';
+          };
+          document.head.appendChild(script2);
+        };
+        script1.onerror = () => {
+          document.getElementById("test4").innerHTML =
+            '<span class="error">unpkg perspective FAILED - may be network issue</span>';
+        };
+        document.head.appendChild(script1);
+      }
+    </script>
+  </body>
+</html>

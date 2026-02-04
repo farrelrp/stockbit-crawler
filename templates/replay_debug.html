@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Replay Debug Console</title>
+    <style>
+      body {
+        font-family: "Courier New", monospace;
+        background: #1a1a1a;
+        color: #00ff00;
+        padding: 20px;
+      }
+      h1 {
+        color: #00ff00;
+        border-bottom: 2px solid #00ff00;
+        padding-bottom: 10px;
+      }
+      .section {
+        background: #2a2a2a;
+        border: 1px solid #00ff00;
+        padding: 15px;
+        margin: 10px 0;
+        border-radius: 5px;
+      }
+      .ok {
+        color: #00ff00;
+      }
+      .error {
+        color: #ff0000;
+      }
+      .warning {
+        color: #ffff00;
+      }
+      button {
+        background: #00ff00;
+        color: #000;
+        border: none;
+        padding: 10px 20px;
+        margin: 5px;
+        cursor: pointer;
+        font-family: "Courier New", monospace;
+        font-weight: bold;
+      }
+      button:hover {
+        background: #00cc00;
+      }
+      pre {
+        background: #000;
+        padding: 10px;
+        border-radius: 3px;
+        overflow-x: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>MARKET REPLAY DEBUG CONSOLE</h1>
+
+    <div class="section">
+      <h2>1. WebSocket Connection</h2>
+      <div id="wsStatus">Testing...</div>
+      <button onclick="testWebSocket()">Test Connection</button>
+    </div>
+
+    <div class="section">
+      <h2>2. Perspective Table Status</h2>
+      <div id="tableStatus">Checking...</div>
+      <button onclick="checkTable()">Check Table</button>
+    </div>
+
+    <div class="section">
+      <h2>3. Replay Engine Status</h2>
+      <div id="engineStatus">Loading...</div>
+      <button onclick="checkEngine()">Refresh Status</button>
+    </div>
+
+    <div class="section">
+      <h2>4. Recent Updates Log</h2>
+      <pre id="updatesLog">No updates yet...</pre>
+    </div>
+
+    <div class="section">
+      <h2>5. Browser Console</h2>
+      <p class="ok">Press F12 to open browser console for detailed logs</p>
+      <p class="warning">Look for [OK], [ERROR], or [UPDATES] messages</p>
+    </div>
+
+    <!-- Load Perspective -->
+    <script src="https://cdn.jsdelivr.net/npm/@finos/perspective@2.10.0/dist/cdn/perspective.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@finos/perspective-viewer@2.10.0/dist/cdn/perspective-viewer.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@finos/perspective-viewer-datagrid@2.10.0/dist/cdn/perspective-viewer-datagrid.js"></script>
+
+    <script>
+      console.log("[DEBUG] Starting debug console...");
+
+      let websocket = null;
+      let table = null;
+      let updateCount = 0;
+
+      function waitForPerspective() {
+        return new Promise((resolve, reject) => {
+          let attempts = 0;
+          const checkInterval = setInterval(() => {
+            attempts++;
+            if (typeof window.perspective !== "undefined") {
+              clearInterval(checkInterval);
+              console.log("[OK] Perspective loaded");
+              resolve();
+            } else if (attempts > 50) {
+              clearInterval(checkInterval);
+              reject(new Error("Perspective not loaded"));
+            }
+          }, 100);
+        });
+      }
+
+      window.testWebSocket = async function () {
+        const status = document.getElementById("wsStatus");
+        try {
+          status.innerHTML =
+            '<span class="warning">Waiting for Perspective library...</span>';
+          await waitForPerspective();
+
+          status.innerHTML =
+            '<span class="warning">Connecting to ws://localhost:8888/websocket...</span>';
+
+          websocket = await window.perspective.websocket(
+            "ws://localhost:8888/websocket",
+          );
+          status.innerHTML = '<span class="ok">Connected to WebSocket!</span>';
+
+          table = await websocket.open_table("orderbook");
+          status.innerHTML +=
+            '<br><span class="ok">Opened "orderbook" table!</span>';
+
+          table.on_update((updated) => {
+            updateCount++;
+            const log = document.getElementById("updatesLog");
+            const timestamp = new Date().toLocaleTimeString();
+            log.textContent =
+              `[${timestamp}] Update #${updateCount} received\n` +
+              log.textContent;
+            if (log.textContent.split("\n").length > 20) {
+              log.textContent = log.textContent
+                .split("\n")
+                .slice(0, 20)
+                .join("\n");
+            }
+          });
+
+          status.innerHTML +=
+            '<br><span class="ok">Monitoring table updates</span>';
+        } catch (error) {
+          status.innerHTML = `<span class="error">Error: ${error.message}</span>`;
+          console.error(error);
+        }
+      };
+
+      window.checkTable = async function () {
+        const status = document.getElementById("tableStatus");
+        if (!table) {
+          status.innerHTML =
+            '<span class="warning">Please connect to WebSocket first</span>';
+          return;
+        }
+
+        try {
+          const schema = await table.schema();
+          const size = await table.size();
+
+          status.innerHTML = `
+            <span class="ok">Table exists</span><br>
+            <span class="ok">Schema: ${JSON.stringify(schema)}</span><br>
+            <span class="ok">Rows: ${size}</span><br>
+            <span class="ok">Updates received: ${updateCount}</span>
+        `;
+
+          const view = await table.view();
+          const data = await view.to_json();
+          const parsed = JSON.parse(data);
+
+          if (parsed.length > 0) {
+            status.innerHTML += `<br><span class="ok">Sample data:</span><pre>${JSON.stringify(
+              parsed.slice(0, 5),
+              null,
+              2,
+            )}</pre>`;
+          } else {
+            status.innerHTML +=
+              '<br><span class="warning">Table is empty (no data yet)</span>';
+          }
+        } catch (error) {
+          status.innerHTML = `<span class="error">Error: ${error.message}</span>`;
+          console.error(error);
+        }
+      };
+
+      window.checkEngine = async function () {
+        const status = document.getElementById("engineStatus");
+        try {
+          const response = await fetch("/api/replay/status");
+          const data = await response.json();
+
+          if (data.success) {
+            const s = data.status;
+            status.innerHTML = `
+                <span class="ok">Engine Status: ${
+                  s.running ? "RUNNING" : "STOPPED"
+                }</span><br>
+                CSV Loaded: ${s.csv_loaded ? "YES" : "NO"}<br>
+                Current Row: ${s.current_index} / ${s.total_rows}<br>
+                Progress: ${s.progress_percent.toFixed(2)}%<br>
+                Speed: ${s.speed_multiplier}x<br>
+                State Size: ${s.state_size} price levels<br>
+                Elapsed: ${s.elapsed_time.toFixed(2)}s
+            `;
+          } else {
+            status.innerHTML = `<span class="error">Error: ${data.error}</span>`;
+          }
+        } catch (error) {
+          status.innerHTML = `<span class="error">Error: ${error.message}</span>`;
+          console.error(error);
+        }
+      };
+
+      setInterval(() => {
+        if (
+          document.getElementById("engineStatus").textContent !== "Loading..."
+        ) {
+          checkEngine();
+        }
+      }, 2000);
+
+      window.addEventListener("load", () => {
+        setTimeout(testWebSocket, 1000);
+      });
+    </script>
+  </body>
+</html>
