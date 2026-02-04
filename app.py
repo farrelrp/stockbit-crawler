@@ -16,6 +16,7 @@ from auth import TokenManager
 from stockbit_client import StockbitClient
 from storage import CSVStorage
 from jobs import JobManager
+from orderbook_manager import OrderbookManager
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -63,6 +64,7 @@ token_manager = TokenManager()
 stockbit_client = StockbitClient(token_manager)
 csv_storage = CSVStorage()
 job_manager = JobManager(stockbit_client, csv_storage)
+orderbook_manager = OrderbookManager(token_manager)
 
 # In-memory log storage for UI
 log_buffer = []
@@ -111,6 +113,11 @@ def files_page():
     """Output files listing page"""
     return render_template('files.html')
 
+@app.route('/orderbook')
+def orderbook_page():
+    """Orderbook streaming page"""
+    return render_template('orderbook.html')
+
 # ===== API ENDPOINTS =====
 
 # --- Authentication & Token ---
@@ -123,9 +130,10 @@ def api_token_status():
 
 @app.route('/api/token/set', methods=['POST'])
 def api_token_set():
-    """Manually set Bearer token"""
+    """Manually set Bearer token and optionally cookies"""
     data = request.get_json() or {}
     token = data.get('token', '').strip()
+    cookies = data.get('cookies', '').strip()  # Optional cookies
     
     if not token:
         return jsonify({
@@ -133,9 +141,9 @@ def api_token_set():
             'error': 'Token required'
         })
     
-    logger.info("Manual token set requested")
+    logger.info("Manual token set requested" + (" (with cookies)" if cookies else ""))
     
-    result = token_manager.set_token(token)
+    result = token_manager.set_token(token, cookies if cookies else None)
     
     if result.get('success'):
         logger.info("Token set successfully")
@@ -268,6 +276,72 @@ def api_job_cancel(job_id):
     job_manager.cancel_job(job_id)
     return jsonify({'success': True})
 
+# --- Orderbook Streaming ---
+
+@app.route('/api/orderbook/streams', methods=['GET'])
+def api_orderbook_list_streams():
+    """List all orderbook streaming sessions"""
+    sessions = orderbook_manager.list_sessions()
+    return jsonify({
+        'success': True,
+        'sessions': sessions
+    })
+
+@app.route('/api/orderbook/streams', methods=['POST'])
+def api_orderbook_start_stream():
+    """Start a new orderbook streaming session"""
+    data = request.get_json() or {}
+    
+    session_id = data.get('session_id', f"stream_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    
+    # parse tickers
+    tickers_input = data.get('tickers', [])
+    if isinstance(tickers_input, str):
+        tickers = [t.strip().upper() for t in tickers_input.split('\n') if t.strip()]
+    else:
+        tickers = [t.strip().upper() for t in tickers_input if t.strip()]
+    
+    if not tickers:
+        return jsonify({
+            'success': False,
+            'error': 'At least one ticker required'
+        }), 400
+    
+    logger.info(f"Starting orderbook stream for {len(tickers)} tickers")
+    
+    result = orderbook_manager.start_stream(session_id, tickers)
+    
+    if result.get('success'):
+        return jsonify(result)
+    else:
+        return jsonify(result), 400
+
+@app.route('/api/orderbook/streams/<session_id>', methods=['GET'])
+def api_orderbook_get_stats(session_id):
+    """Get statistics for an orderbook streaming session"""
+    stats = orderbook_manager.get_session_stats(session_id)
+    
+    if stats:
+        return jsonify({
+            'success': True,
+            'stats': stats
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'error': 'Session not found'
+        }), 404
+
+@app.route('/api/orderbook/streams/<session_id>/stop', methods=['POST'])
+def api_orderbook_stop_stream(session_id):
+    """Stop an orderbook streaming session"""
+    result = orderbook_manager.stop_stream(session_id)
+    
+    if result.get('success'):
+        return jsonify(result)
+    else:
+        return jsonify(result), 400
+
 # --- Logs ---
 
 @app.route('/api/logs', methods=['GET'])
@@ -332,6 +406,7 @@ if __name__ == '__main__':
         # cleanup on shutdown
         logger.info("Shutting down")
         job_manager.stop_worker()
+        orderbook_manager.stop_all()
 
 
 

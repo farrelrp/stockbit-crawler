@@ -42,8 +42,21 @@
                     </small>
                 </div>
                 
+                <div class="mb-3">
+                    <label for="cookies" class="form-label">Cookies (Optional, for Orderbook streaming):</label>
+                    <textarea 
+                        id="cookies" 
+                        class="form-control" 
+                        rows="3" 
+                        placeholder="Paste your Cookie header here (e.g., from Postman)..."
+                    ></textarea>
+                    <small class="text-muted">
+                        <strong>Optional but recommended for stable WebSocket connections.</strong> Copy the entire Cookie header from Postman or Browser DevTools. This helps keep orderbook connections alive for hours.
+                    </small>
+                </div>
+                
                 <button type="submit" class="btn btn-primary">
-                    <i class="fas fa-save"></i> Save Token
+                    <i class="fas fa-save"></i> Save Token & Cookies
                 </button>
             </form>
         </div>
@@ -145,29 +158,36 @@ document.getElementById('token-form').addEventListener('submit', (e) => {
     e.preventDefault();
     
     const token = document.getElementById('bearer-token').value.trim();
+    const cookies = document.getElementById('cookies').value.trim();
     
     if (!token) {
         showNotification('Please enter a token', 'error');
         return;
     }
     
-    // submit token
+    // submit token and cookies
+    const payload = { token };
+    if (cookies) {
+        payload.cookies = cookies;
+    }
+    
     fetch('/api/token/set', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ token })
+        body: JSON.stringify(payload)
     })
     .then(res => res.json())
     .then(data => {
         if (data.success) {
-            let message = 'Token saved successfully!';
+            let message = data.message || 'Token saved successfully!';
             if (data.resumed_jobs && data.resumed_jobs > 0) {
                 message += ` ${data.resumed_jobs} paused job(s) resumed!`;
             }
             showNotification(message, 'success');
             document.getElementById('bearer-token').value = '';
+            document.getElementById('cookies').value = '';
             checkTokenStatus();
         } else {
             showNotification('Failed to save token: ' + data.error, 'error');

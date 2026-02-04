@@ -13,11 +13,13 @@ DEBUG = os.environ.get('DEBUG', 'True').lower() == 'true'
 
 # Data directories
 DATA_DIR = BASE_DIR / 'data'
+ORDERBOOK_DIR = DATA_DIR / 'orderbook'
 LOGS_DIR = BASE_DIR / 'logs'
 CONFIG_DIR = BASE_DIR / 'config_data'
 
 # Create directories if they don't exist
 DATA_DIR.mkdir(exist_ok=True)
+ORDERBOOK_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)
 CONFIG_DIR.mkdir(exist_ok=True)
 
@@ -25,6 +27,7 @@ CONFIG_DIR.mkdir(exist_ok=True)
 STOCKBIT_API_BASE = 'https://exodus.stockbit.com'
 STOCKBIT_LOGIN_URL = 'https://stockbit.com/api/login/email'
 STOCKBIT_RUNNING_TRADE_URL = f'{STOCKBIT_API_BASE}/order-trade/running-trade'
+STOCKBIT_WEBSOCKET_URL = 'wss://wss-jkt.trading.stockbit.com/ws'
 
 # reCAPTCHA config (for login)
 RECAPTCHA_SITE_KEY = '6LcOuysTAAAAAHTjFuqhA-egan4CL9BieDa9z5B_'  # this might be visible in page source

@@ -1,9 +1,10 @@
 # Stockbit Running Trade Scraper
 
-A Flask-based web application that automates retrieval of running trade data for multiple Indonesian stock tickers from the Stockbit API.
+A Flask-based web application that automates retrieval of running trade data and real-time orderbook data for multiple Indonesian stock tickers from the Stockbit API.
 
 ## Features
 
+### Running Trade (Historical Data)
 - 🔐 **Manual Token Authentication**: Simple Bearer token input - no automation needed!
 - 💾 **Job Persistence**: Jobs are saved to database - survive server restarts!
 - 📊 **Automated Data Collection**: Fetch running trade data for multiple tickers across date ranges
@@ -11,6 +12,14 @@ A Flask-based web application that automates retrieval of running trade data for
 - 📁 **CSV Export**: Automatic export of trade data to CSV files
 - 🔄 **Live Dashboard**: Real-time progress monitoring and logs
 - ⚡ **Token Expiry Detection**: Automatically detects when your token expires
+
+### Orderbook Level 2 Streaming (Real-Time)
+- 📡 **WebSocket Streaming**: Real-time orderbook data via persistent connection
+- 🎯 **Multi-Stock Support**: Subscribe to multiple tickers in a single WebSocket connection
+- 🗂️ **Daily CSV Files**: Automatic daily file rotation per ticker (e.g., `2026-02-04_BBCA.csv`)
+- 🔄 **Session Management**: Start/stop multiple streaming sessions independently
+- 📊 **Live Statistics**: Real-time message counts and uptime monitoring
+- 🔐 **Protobuf Protocol**: Binary protocol for efficient data transmission
 
 ## Installation
 
@@ -25,6 +34,7 @@ pip install -r requirements.txt
    - Flask (web framework)
    - requests (API calls)
    - pandas (CSV handling)
+   - websockets (orderbook streaming)
 
 3. **Run the application**:
 ```bash
@@ -70,34 +80,59 @@ http://localhost:5151
 2. View all generated CSV files
 3. Click **Download** to get the data
 
+### 5. Stream Real-Time Orderbook Data (NEW!)
+
+1. Go to **Orderbook** page
+2. Enter stock tickers (one per line)
+3. Optionally provide a session ID (auto-generated if blank)
+4. Click **Start Stream**
+5. Monitor real-time statistics:
+   - Message counts per ticker
+   - Stream uptime
+   - Last update times
+6. CSV files automatically created in `data/orderbook/` with format: `YYYY-MM-DD_TICKER.csv`
+7. Click **Stop** when done
+
+**Note**: Orderbook streaming uses WebSocket with binary Protobuf protocol for efficient real-time data transmission.
+
+See [`ORDERBOOK_GUIDE.md`](ORDERBOOK_GUIDE.md) for detailed documentation.
+
 ## Project Structure
 
 ```
 Saham Flask/
-├── app.py                 # Main Flask application
-├── config.py              # Configuration settings
-├── auth.py                # Authentication and token management
-├── stockbit_client.py     # Stockbit API client
-├── storage.py             # CSV data storage
-├── jobs.py                # Job scheduler and manager
-├── database.py            # SQLite database for job persistence
-├── requirements.txt       # Python dependencies
-├── HOW_TO_GET_TOKEN.md    # Guide for getting Bearer token
-├── templates/             # HTML templates
+├── app.py                          # Main Flask application
+├── config.py                       # Configuration settings
+├── auth.py                         # Authentication and token management
+├── stockbit_client.py              # Stockbit API client (REST)
+├── orderbook_streamer.py           # Orderbook WebSocket streaming (NEW)
+├── orderbook_manager.py            # Orderbook session manager (NEW)
+├── storage.py                      # CSV data storage
+├── jobs.py                         # Job scheduler and manager
+├── database.py                     # SQLite database for job persistence
+├── requirements.txt                # Python dependencies
+├── test_orderbook.py               # Orderbook testing script (NEW)
+├── HOW_TO_GET_TOKEN.md             # Guide for getting Bearer token
+├── ORDERBOOK_GUIDE.md              # Orderbook streaming documentation (NEW)
+├── ORDERBOOK_IMPLEMENTATION.md     # Technical implementation details (NEW)
+├── templates/                      # HTML templates
 │   ├── base.html
 │   ├── dashboard.html
 │   ├── settings.html
 │   ├── jobs.html
+│   ├── orderbook.html              # Orderbook streaming UI (NEW)
 │   ├── captcha.html
 │   ├── files.html
 │   ├── 404.html
 │   └── 500.html
-├── static/                # CSS and JavaScript
+├── static/                         # CSS and JavaScript
 │   ├── style.css
 │   └── script.js
-├── data/                  # Output CSV files (auto-created)
-├── logs/                  # Application logs (auto-created)
-└── config_data/           # Saved credentials (auto-created)
+├── data/                           # Output CSV files (auto-created)
+│   ├── running_trade/              # Historical trade data
+│   └── orderbook/                  # Real-time orderbook data (NEW)
+├── logs/                           # Application logs (auto-created)
+└── config_data/                    # Saved credentials (auto-created)
 ```
 
 ## API Endpoints
@@ -119,6 +154,12 @@ Saham Flask/
 - `POST /api/jobs/<job_id>/pause` - Pause a job
 - `POST /api/jobs/<job_id>/resume` - Resume a paused job
 - `POST /api/jobs/<job_id>/cancel` - Cancel a job
+
+### Orderbook Streaming
+- `GET /api/orderbook/streams` - List all streaming sessions
+- `POST /api/orderbook/streams` - Start new orderbook stream
+- `GET /api/orderbook/streams/<session_id>` - Get session statistics
+- `POST /api/orderbook/streams/<session_id>/stop` - Stop a stream
 
 ### Logs & Files
 - `GET /api/logs` - Get recent log entries

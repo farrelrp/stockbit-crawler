@@ -3,41 +3,49 @@ Simple token management for Stockbit - Manual Input Only
 """
 import json
 import base64
+import requests
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
-from config import CONFIG_DIR
+from config import CONFIG_DIR, STOCKBIT_API_BASE, HEADERS_TEMPLATE
+
+logger = logging.getLogger(__name__)
 
 TOKEN_FILE = CONFIG_DIR / 'token.json'
+WEBSOCKET_KEY_URL = f'{STOCKBIT_API_BASE}/auth/websocket/key'
 
 class TokenManager:
-    """Manages Bearer token - manual input only"""
+    """Manages Bearer token and cookies - manual input only"""
     
     def __init__(self):
         self.token: Optional[str] = None
         self.exp: Optional[int] = None
         self.issued_at: Optional[datetime] = None
+        self.cookies: Optional[str] = None  # Store cookies for WebSocket
         self._load_token()
     
     def _load_token(self):
-        """Load saved token from file"""
+        """Load saved token and cookies from file"""
         if TOKEN_FILE.exists():
             try:
                 with open(TOKEN_FILE, 'r') as f:
                     data = json.load(f)
                     self.token = data.get('token')
                     self.exp = data.get('exp')
+                    self.cookies = data.get('cookies')  # Load cookies
                     if data.get('issued_at'):
                         self.issued_at = datetime.fromisoformat(data['issued_at'])
             except Exception as e:
                 print(f"Failed to load token: {e}")
     
     def _save_token(self):
-        """Save token to file"""
+        """Save token and cookies to file"""
         try:
             data = {
                 'token': self.token,
                 'exp': self.exp,
+                'cookies': self.cookies,  # Save cookies
                 'issued_at': self.issued_at.isoformat() if self.issued_at else None
             }
             with open(TOKEN_FILE, 'w') as f:
@@ -64,8 +72,58 @@ class TokenManager:
         except Exception as e:
             raise Exception(f"Failed to decode token: {e}")
     
-    def set_token(self, token: str) -> Dict[str, Any]:
-        """Set a new token manually"""
+    def get_user_id(self) -> Optional[int]:
+        """Extract userId from JWT token payload"""
+        if not self.token:
+            return None
+        
+        try:
+            payload = self.decode_token(self.token)
+            # uid is nested in data object
+            return payload.get('data', {}).get('uid')
+        except Exception as e:
+            logger.error(f"Failed to get userId from token: {e}")
+            return None
+    
+    def fetch_trading_key(self) -> Optional[str]:
+        """Fetch trading key for WebSocket connection"""
+        token = self.get_valid_token()
+        if not token:
+            logger.error("No valid token available to fetch trading key")
+            return None
+        
+        try:
+            headers = HEADERS_TEMPLATE.copy()
+            headers['Authorization'] = f'Bearer {token}'
+            
+            response = requests.get(
+                WEBSOCKET_KEY_URL,
+                headers=headers,
+                timeout=10
+            )
+            
+            if response.status_code == 401:
+                logger.error("Token expired while fetching trading key")
+                self.mark_token_invalid()
+                return None
+            
+            response.raise_for_status()
+            data = response.json()
+            
+            trading_key = data.get('data', {}).get('key')
+            if trading_key:
+                logger.info("Successfully fetched trading key")
+                return trading_key
+            else:
+                logger.error("Trading key not found in response")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Failed to fetch trading key: {e}")
+            return None
+    
+    def set_token(self, token: str, cookies: str = None) -> Dict[str, Any]:
+        """Set a new token and optionally cookies manually"""
         try:
             # decode and validate
             payload = self.decode_token(token)
@@ -74,12 +132,17 @@ class TokenManager:
             self.exp = payload.get('exp')
             self.issued_at = datetime.now()
             
+            # Set cookies if provided
+            if cookies:
+                self.cookies = cookies
+                logger.info("Cookies saved for WebSocket authentication")
+            
             # save to disk
             self._save_token()
             
             return {
                 'success': True,
-                'message': 'Token set successfully',
+                'message': 'Token set successfully' + (' (with cookies)' if cookies else ''),
                 'expires_at': datetime.fromtimestamp(self.exp).isoformat() if self.exp else None
             }
         except Exception as e:
@@ -87,6 +150,10 @@ class TokenManager:
                 'success': False,
                 'error': f'Invalid token: {str(e)}'
             }
+    
+    def get_cookies(self) -> Optional[str]:
+        """Get stored cookies for WebSocket"""
+        return self.cookies
     
     def get_valid_token(self) -> Optional[str]:
         """Get current token if still valid, None otherwise"""
