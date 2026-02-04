@@ -95,9 +95,9 @@ async def test_connection():
                             print(f"  {elapsed:.1f}s: {msg_count} messages received")
                         
                 except asyncio.TimeoutError:
-                    print(f"\n⚠ No message for 2 seconds at {elapsed:.1f}s")
+                    print(f"\n[WARNING] No message for 2 seconds at {elapsed:.1f}s")
                 except websockets.exceptions.ConnectionClosed as e:
-                    print(f"\n✗ Connection closed at {elapsed:.1f}s: code={e.code}, reason={e.reason}")
+                    print(f"\n[ERROR] Connection closed at {elapsed:.1f}s: code={e.code}, reason={e.reason}")
                 
                 print(f"Total messages: {msg_count}")
                 

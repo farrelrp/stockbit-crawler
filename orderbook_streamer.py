@@ -286,7 +286,7 @@ class OrderbookCSVStorage:
 class OrderbookStreamer:
     """WebSocket streamer for orderbook data across multiple stocks"""
     
-    def __init__(self, token_manager, tickers: List[str]):
+    def __init__(self, token_manager, tickers: List[str], max_retries: int = None, retry_delay: int = 5):
         self.token_manager = token_manager
         self.tickers = [t.upper() for t in tickers]
         self.csv_storage = OrderbookCSVStorage()
@@ -295,21 +295,37 @@ class OrderbookStreamer:
         self.running = False
         self.task = None
         
+        # retry configuration
+        self.max_retries = max_retries  # None = infinite retries
+        self.retry_delay = retry_delay  # base delay in seconds
+        self.retry_count = 0
+        self.last_error = None
+        self.connection_status = 'disconnected'  # disconnected, connecting, connected, error, stopped
+        
         # stats tracking
         self.message_count = defaultdict(int)
         self.last_update = {}
         self.connection_time = None
+        self.last_disconnect_time = None
+        self.total_reconnects = 0
         
         logger.info(f"OrderbookStreamer initialized for {len(self.tickers)} tickers")
     
     async def connect(self):
         """Establish WebSocket connection and subscribe to orderbook"""
+        self.connection_status = 'connecting'
+        
+        # refresh token before connecting
+        logger.info("Refreshing token before connection attempt...")
+        access_token = self.token_manager.get_valid_token()
+        
         # fetch required auth data
         user_id = self.token_manager.get_user_id()
         trading_key = self.token_manager.fetch_trading_key()
-        access_token = self.token_manager.get_valid_token()
         
         if not user_id or not trading_key or not access_token:
+            self.connection_status = 'error'
+            self.last_error = "Failed to get authentication data"
             raise Exception("Failed to get authentication data for WebSocket")
         
         logger.info(f"Connecting to WebSocket with userId={user_id}, tickers={self.tickers}")
@@ -342,9 +358,12 @@ class OrderbookStreamer:
                 close_timeout=10,    # wait 10 seconds for clean close
                 compression=None     # no compression
             )
-            logger.info("✅ WebSocket connected (passive mode, no client pings)")
+            logger.info("[OK] WebSocket connected (passive mode, no client pings)")
+            self.connection_status = 'connected'
         except Exception as e:
-            logger.error(f"❌ Failed to connect to WebSocket: {e}")
+            self.connection_status = 'error'
+            self.last_error = str(e)
+            logger.error(f"[ERROR] Failed to connect to WebSocket: {e}")
             raise
         
         # send subscription request
@@ -360,16 +379,16 @@ class OrderbookStreamer:
         
         try:
             await self.websocket.send(subscription_msg)
-            logger.info(f"✅ Sent subscription for {len(self.tickers)} tickers: {', '.join(self.tickers)}")
+            logger.info(f"[OK] Sent subscription for {len(self.tickers)} tickers: {', '.join(self.tickers)}")
         except Exception as e:
-            logger.error(f"❌ Failed to send subscription: {e}")
+            logger.error(f"[ERROR] Failed to send subscription: {e}")
             raise
         
         # Don't wait for immediate response - let the receive loop handle it
         logger.info("Subscription sent, waiting for data in receive loop...")
         
         self.connection_time = datetime.now()
-        logger.info(f"🎯 Connection established and ready to receive data")
+        logger.info("Connection established and ready to receive data")
     
     async def handle_message(self, raw_data: bytes):
         """Process incoming orderbook message"""
@@ -379,7 +398,7 @@ class OrderbookStreamer:
             
             fields = decode_orderbook_message(raw_data)
             if not fields:
-                logger.warning(f"⚠️ Could not decode message (got None)")
+                logger.warning("Could not decode message (got None)")
                 return
             
             logger.debug(f"Decoded fields: {list(fields.keys())}")
@@ -387,19 +406,19 @@ class OrderbookStreamer:
             # extract ticker symbol (field 1)
             ticker = fields.get(1, '').strip().upper()
             if not ticker:
-                logger.warning(f"⚠️ Received message without ticker symbol. Fields: {fields}")
+                logger.warning(f"Received message without ticker symbol. Fields: {fields}")
                 return
             
             # extract orderbook data (field 2)
             orderbook_raw = fields.get(2, '')
             if not orderbook_raw:
-                logger.warning(f"⚠️ No orderbook data in field 2 for {ticker}")
+                logger.warning(f"No orderbook data in field 2 for {ticker}")
                 return
             
             # timestamps (field 5 and 9)
             timestamp = fields.get(5) or fields.get(9) or datetime.now().isoformat()
             
-            logger.info(f"📊 {ticker}: Processing orderbook data ({len(orderbook_raw)} chars)")
+            logger.info(f"[DATA] {ticker}: Processing orderbook data ({len(orderbook_raw)} chars)")
             
             # parse orderbook levels: SIDE|PRICE;LOTS;VALUE|...
             self._parse_and_store_orderbook(ticker, orderbook_raw, timestamp)
@@ -409,7 +428,7 @@ class OrderbookStreamer:
             self.last_update[ticker] = datetime.now()
             
         except Exception as e:
-            logger.error(f"❌ Error handling orderbook message: {e}", exc_info=True)
+            logger.error(f"[ERROR] Error handling orderbook message: {e}", exc_info=True)
             logger.error(f"Raw data (first 200 bytes): {raw_data[:200]}")
     
     def _parse_and_store_orderbook(self, ticker: str, raw_data: str, timestamp):
@@ -465,14 +484,14 @@ class OrderbookStreamer:
             await asyncio.sleep(30)
             
             if self.websocket and not self.websocket.closed:
-                logger.debug("💓 Connection alive (passive monitoring)")
+                logger.debug("[HEARTBEAT] Connection alive (passive monitoring)")
             else:
-                logger.warning("💔 Heartbeat detected closed connection")
+                logger.warning("[HEARTBEAT] Detected closed connection")
                 break
     
     async def receive_loop(self):
         """Main loop to receive and process messages"""
-        logger.info("📡 Starting receive loop...")
+        logger.info("[RECEIVE] Starting receive loop...")
         message_counter = 0
         last_message_time = datetime.now()
         
@@ -483,44 +502,89 @@ class OrderbookStreamer:
                 
                 if isinstance(message, bytes):
                     # Log first bytes to see message type
-                    logger.debug(f"📨 Message #{message_counter} ({len(message)} bytes) - first 20 bytes: {message[:20].hex()}")
+                    logger.debug(f"[MSG] Message #{message_counter} ({len(message)} bytes) - first 20 bytes: {message[:20].hex()}")
                     await self.handle_message(message)
                 else:
-                    logger.info(f"📨 Received text message #{message_counter}: {message}")
+                    logger.info(f"[MSG] Received text message #{message_counter}: {message}")
                     
         except websockets.exceptions.ConnectionClosed as e:
             time_since_last = (datetime.now() - last_message_time).total_seconds()
             if message_counter == 0:
-                logger.error(f"❌ Connection closed without receiving any data! code={e.code}")
+                logger.error(f"[ERROR] Connection closed without receiving any data! code={e.code}")
             else:
-                logger.info(f"⚠️ WebSocket connection closed: code={e.code}, reason={e.reason}, last message {time_since_last}s ago")
+                logger.info(f"[CLOSED] WebSocket connection closed: code={e.code}, reason={e.reason}, last message {time_since_last}s ago")
         except Exception as e:
-            logger.error(f"❌ Error in receive loop: {e}", exc_info=True)
+            logger.error(f"[ERROR] Error in receive loop: {e}", exc_info=True)
         finally:
-            logger.info(f"📡 Receive loop ended after {message_counter} messages")
+            logger.info(f"[RECEIVE] Receive loop ended after {message_counter} messages")
     
     async def run(self):
-        """Start the orderbook streaming session"""
+        """Start the orderbook streaming session with auto-reconnect"""
         self.running = True
+        self.retry_count = 0
         
-        try:
-            await self.connect()
-            
-            # run heartbeat and receive loop concurrently
-            heartbeat_task = asyncio.create_task(self.heartbeat())
-            receive_task = asyncio.create_task(self.receive_loop())
-            
-            # wait for either to finish (or error)
-            await asyncio.gather(heartbeat_task, receive_task, return_exceptions=True)
-            
-        except Exception as e:
-            logger.error(f"Orderbook streamer error: {e}", exc_info=True)
-        finally:
-            await self.stop()
+        while self.running:
+            try:
+                # check if we've exceeded max retries
+                if self.max_retries is not None and self.retry_count > self.max_retries:
+                    logger.error(f"[RETRY] Max retries ({self.max_retries}) exceeded, giving up")
+                    self.connection_status = 'stopped'
+                    break
+                
+                if self.retry_count > 0:
+                    # calculate exponential backoff delay (capped at 5 minutes)
+                    delay = min(self.retry_delay * (2 ** (self.retry_count - 1)), 300)
+                    logger.info(f"[RETRY] Attempt {self.retry_count}, waiting {delay}s before reconnecting...")
+                    self.connection_status = f'retrying ({delay}s)'
+                    await asyncio.sleep(delay)
+                
+                logger.info(f"[CONNECT] Connecting to WebSocket (attempt {self.retry_count + 1})...")
+                await self.connect()
+                
+                # reset retry count on successful connection
+                if self.retry_count > 0:
+                    self.total_reconnects += 1
+                    logger.info(f"[RECONNECT] Successfully reconnected (total reconnects: {self.total_reconnects})")
+                self.retry_count = 0
+                self.last_error = None
+                
+                # run heartbeat and receive loop concurrently
+                heartbeat_task = asyncio.create_task(self.heartbeat())
+                receive_task = asyncio.create_task(self.receive_loop())
+                
+                # wait for either to finish (or error)
+                results = await asyncio.gather(heartbeat_task, receive_task, return_exceptions=True)
+                
+                # check if we stopped intentionally
+                if not self.running:
+                    break
+                
+                # if we got here, connection was lost - log and retry
+                logger.warning(f"[DISCONNECT] Connection lost, will retry...")
+                self.last_disconnect_time = datetime.now()
+                self.retry_count += 1
+                
+            except Exception as e:
+                self.last_error = str(e)
+                self.last_disconnect_time = datetime.now()
+                logger.error(f"[ERROR] Orderbook streamer error: {e}", exc_info=True)
+                self.retry_count += 1
+                
+                # close websocket if still open
+                if self.websocket:
+                    try:
+                        await self.websocket.close()
+                    except:
+                        pass
+        
+        # final cleanup
+        await self.stop()
     
     async def stop(self):
         """Stop streaming and cleanup"""
+        logger.info("[STOP] Stopping orderbook streamer...")
         self.running = False
+        self.connection_status = 'stopped'
         
         if self.websocket:
             try:
@@ -529,12 +593,13 @@ class OrderbookStreamer:
                 pass
         
         self.csv_storage.close_all()
-        logger.info("OrderbookStreamer stopped")
+        logger.info("[STOP] OrderbookStreamer stopped")
     
     def get_stats(self) -> Dict:
         """Get current streaming statistics"""
         return {
             'running': self.running,
+            'connection_status': self.connection_status,
             'tickers': self.tickers,
             'message_counts': dict(self.message_count),
             'last_updates': {
@@ -543,5 +608,9 @@ class OrderbookStreamer:
             },
             'connection_time': self.connection_time.isoformat() if self.connection_time else None,
             'uptime_seconds': (datetime.now() - self.connection_time).total_seconds() 
-                if self.connection_time else 0
+                if self.connection_time else 0,
+            'retry_count': self.retry_count,
+            'total_reconnects': self.total_reconnects,
+            'last_error': self.last_error,
+            'last_disconnect_time': self.last_disconnect_time.isoformat() if self.last_disconnect_time else None
         }

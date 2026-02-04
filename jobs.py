@@ -259,7 +259,7 @@ class JobManager:
                 resumed_count += 1
         
         if resumed_count > 0:
-            logger.info(f"✅ Auto-resumed {resumed_count} paused job(s) after token refresh")
+            logger.info(f"[OK] Auto-resumed {resumed_count} paused job(s) after token refresh")
         
         return resumed_count
     
@@ -371,7 +371,7 @@ class JobManager:
             job.status = JobStatus.COMPLETED
             job.completed_at = datetime.now().isoformat()
             self._persist_job(job)
-            logger.info(f"✅ Job {job.job_id} completed")
+            logger.info(f"[OK] Job {job.job_id} completed")
             
         except Exception as e:
             logger.error(f"Job {job.job_id} failed with error: {e}")

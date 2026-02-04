@@ -289,10 +289,11 @@ def api_orderbook_list_streams():
 
 @app.route('/api/orderbook/streams', methods=['POST'])
 def api_orderbook_start_stream():
-    """Start a new orderbook streaming session"""
+    """Start a new orderbook streaming session with auto-reconnect"""
     data = request.get_json() or {}
     
     session_id = data.get('session_id', f"stream_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    max_retries = data.get('max_retries', None)  # None = infinite retries
     
     # parse tickers
     tickers_input = data.get('tickers', [])
@@ -307,9 +308,9 @@ def api_orderbook_start_stream():
             'error': 'At least one ticker required'
         }), 400
     
-    logger.info(f"Starting orderbook stream for {len(tickers)} tickers")
+    logger.info(f"Starting orderbook stream for {len(tickers)} tickers (max_retries={max_retries})")
     
-    result = orderbook_manager.start_stream(session_id, tickers)
+    result = orderbook_manager.start_stream(session_id, tickers, max_retries=max_retries)
     
     if result.get('success'):
         return jsonify(result)

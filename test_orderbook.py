@@ -134,7 +134,7 @@ async def test_orderbook_stream():
             print("\nCheck data/orderbook/ for CSV files")
             return True
         else:
-            print("⚠ No messages received (market might be closed)")
+            print("[WARNING] No messages received (market might be closed)")
             return True  # not a failure, just no data
             
     except Exception as e:

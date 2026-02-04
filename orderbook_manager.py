@@ -36,13 +36,14 @@ class OrderbookManager:
             self.thread.start()
             logger.info("Started background event loop for orderbook streaming")
     
-    def start_stream(self, session_id: str, tickers: List[str]) -> Dict:
+    def start_stream(self, session_id: str, tickers: List[str], max_retries: int = None) -> Dict:
         """
-        Start a new orderbook streaming session
+        Start a new orderbook streaming session with auto-reconnect
         
         Args:
             session_id: Unique identifier for this session
             tickers: List of stock symbols to stream
+            max_retries: Maximum reconnection attempts (None = infinite)
         
         Returns:
             Dict with success status and session info
@@ -66,8 +67,8 @@ class OrderbookManager:
             # ensure event loop is running
             self._ensure_event_loop()
             
-            # create streamer
-            streamer = OrderbookStreamer(self.token_manager, tickers)
+            # create streamer with retry capability
+            streamer = OrderbookStreamer(self.token_manager, tickers, max_retries=max_retries)
             
             # schedule the streamer on the event loop
             future = asyncio.run_coroutine_threadsafe(streamer.run(), self.loop)

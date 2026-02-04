@@ -31,6 +31,18 @@
                     <small class="form-text text-muted">Enter stock symbols, one per line</small>
                 </div>
                 
+                <div class="mb-3">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="autoReconnect" checked>
+                        <label class="form-check-label" for="autoReconnect">
+                            <strong>Enable Auto-Reconnect</strong>
+                        </label>
+                    </div>
+                    <small class="form-text text-muted">
+                        Automatically reconnect and refresh token when connection fails (recommended)
+                    </small>
+                </div>
+                
                 <button type="submit" class="btn btn-primary">
                     <i class="bi bi-play-circle"></i> Start Stream
                 </button>
@@ -71,6 +83,34 @@
 .stream-card.stopped {
     border-left: 4px solid #dc3545;
     background: rgba(248,249,250,1);
+}
+
+.connection-status {
+    padding: 0.75rem;
+    background: #f8f9fa;
+    border-radius: 0.25rem;
+    margin-top: 1rem;
+    border-left: 3px solid #6c757d;
+}
+
+.connection-status.connected {
+    background: rgba(40,167,69,0.1);
+    border-left-color: #28a745;
+}
+
+.connection-status.connecting {
+    background: rgba(255,193,7,0.1);
+    border-left-color: #ffc107;
+}
+
+.connection-status.retrying {
+    background: rgba(255,152,0,0.1);
+    border-left-color: #ff9800;
+}
+
+.connection-status.error {
+    background: rgba(220,53,69,0.1);
+    border-left-color: #dc3545;
 }
 
 .ticker-badge {
@@ -116,13 +156,17 @@ document.getElementById('startStreamForm').addEventListener('submit', async (e) 
     
     const sessionId = document.getElementById('sessionId').value.trim();
     const tickers = document.getElementById('tickers').value;
+    const autoReconnect = document.getElementById('autoReconnect').checked;
     
     if (!tickers.trim()) {
         showAlert('Please enter at least one ticker', 'warning');
         return;
     }
     
-    const payload = { tickers };
+    const payload = { 
+        tickers,
+        max_retries: autoReconnect ? null : 0  // null = infinite retries, 0 = no retries
+    };
     if (sessionId) {
         payload.session_id = sessionId;
     }
@@ -206,7 +250,14 @@ function displayStreams(sessions) {
                             <div class="stat-label">Active Tickers</div>
                             <div class="stat-value">${Object.keys(session.message_counts || {}).length}</div>
                         </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Reconnects</div>
+                            <div class="stat-value">${session.total_reconnects || 0}</div>
+                        </div>
                     </div>
+                    
+                    <!-- Connection Status -->
+                    ${session.running ? renderConnectionStatus(session) : ''}
                     
                     ${session.message_counts && Object.keys(session.message_counts).length > 0 ? `
                         <details class="mt-3">
@@ -225,21 +276,8 @@ function displayStreams(sessions) {
                     <div class="mt-2" style="font-size: 0.875rem; color: #6c757d;">
                         Started: ${new Date(session.started_at).toLocaleString()}
                         ${session.stopped_at ? `<br>Stopped: ${new Date(session.stopped_at).toLocaleString()}` : ''}
+                        ${session.last_disconnect_time ? `<br>Last Disconnect: ${new Date(session.last_disconnect_time).toLocaleString()}` : ''}
                     </div>
-                    
-                    ${session.running ? `
-                        <div class="mt-2">
-                            <span class="badge bg-success">
-                                <i class="bi bi-wifi"></i> Connected
-                            </span>
-                        </div>
-                    ` : `
-                        <div class="mt-2">
-                            <span class="badge bg-secondary">
-                                <i class="bi bi-x-circle"></i> Disconnected
-                            </span>
-                        </div>
-                    `}
                 </div>
                 
                 <div>
@@ -274,6 +312,49 @@ async function stopStream(sessionId) {
     } catch (error) {
         showAlert('Error stopping stream: ' + error.message, 'danger');
     }
+}
+
+// render connection status with details
+function renderConnectionStatus(session) {
+    const status = session.connection_status || 'unknown';
+    let statusClass = '';
+    let icon = 'circle';
+    let message = status;
+    
+    if (status === 'connected') {
+        statusClass = 'connected';
+        icon = 'check-circle-fill';
+        message = 'Connected';
+    } else if (status === 'connecting') {
+        statusClass = 'connecting';
+        icon = 'arrow-repeat';
+        message = 'Connecting...';
+    } else if (status.startsWith('retrying')) {
+        statusClass = 'retrying';
+        icon = 'arrow-clockwise';
+        message = `Reconnecting ${status}`;
+    } else if (status === 'error') {
+        statusClass = 'error';
+        icon = 'exclamation-triangle-fill';
+        message = 'Connection Error';
+    }
+    
+    return `
+        <div class="connection-status ${statusClass}">
+            <div class="d-flex align-items-center justify-content-between">
+                <div>
+                    <i class="bi bi-${icon}"></i>
+                    <strong>${message}</strong>
+                    ${session.retry_count > 0 ? `<span class="ms-2 badge bg-warning text-dark">Retry #${session.retry_count}</span>` : ''}
+                </div>
+            </div>
+            ${session.last_error ? `
+                <div class="mt-2 text-danger" style="font-size: 0.875rem;">
+                    <i class="bi bi-exclamation-circle"></i> ${session.last_error}
+                </div>
+            ` : ''}
+        </div>
+    `;
 }
 
 // format uptime in human readable format

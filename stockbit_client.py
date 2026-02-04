@@ -271,7 +271,7 @@ class StockbitClient:
             # small delay between pages to be nice to the API
             time.sleep(0.5)
         
-        logger.info(f"✅ Completed fetching {ticker} {date}: {len(all_trades)} total trades across {page} pages")
+        logger.info(f"[OK] Completed fetching {ticker} {date}: {len(all_trades)} total trades across {page} pages")
         
         return {
             'success': True,
