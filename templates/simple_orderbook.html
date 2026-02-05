@@ -1,9 +1,6 @@
 {% extends "base.html" %} {% block title %}Simple Orderbook View{% endblock %}
 {% block content %}
-<link
-  rel="stylesheet"
-  href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css"
-/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" />
 
 <style>
   .orderbook-container {
@@ -72,10 +69,12 @@
   }
 
   @keyframes pulse {
+
     0%,
     100% {
       opacity: 1;
     }
+
     50% {
       opacity: 0.3;
     }
@@ -104,14 +103,17 @@
     background: #28a745;
     color: white;
   }
+
   .btn-danger {
     background: #dc3545;
     color: white;
   }
+
   .btn-warning {
     background: #ffc107;
     color: #000;
   }
+
   .btn-primary {
     background: #007bff;
     color: white;
@@ -144,75 +146,33 @@
       <strong>Levels:</strong> <span id="levels">0</span>
     </div>
     <div>
-      <select
-        id="fileSelect"
-        class="form-control"
-        style="display: inline-block; width: auto; margin-right: 10px"
-      >
+      <select id="fileSelect" class="form-control" style="display: inline-block; width: auto; margin-right: 10px">
         <option value="">Loading files...</option>
       </select>
       <button class="btn btn-primary" onclick="loadFile()">Load</button>
       <button class="btn btn-success" id="startBtn" onclick="startReplay()">
         ▶ Start
       </button>
-      <button
-        class="btn btn-warning"
-        id="pauseBtn"
-        onclick="pauseReplay()"
-        disabled
-      >
+      <button class="btn btn-warning" id="pauseBtn" onclick="pauseReplay()" disabled>
         ⏸ Pause
       </button>
-      <button
-        class="btn btn-success"
-        id="resumeBtn"
-        onclick="resumeReplay()"
-        disabled
-        style="display: none"
-      >
+      <button class="btn btn-success" id="resumeBtn" onclick="resumeReplay()" disabled style="display: none">
         ▶ Resume
       </button>
-      <button
-        class="btn btn-danger"
-        id="stopBtn"
-        onclick="stopReplay()"
-        disabled
-      >
+      <button class="btn btn-danger" id="stopBtn" onclick="stopReplay()" disabled>
         ⏹ Stop
       </button>
-      <input
-        type="number"
-        id="speedInput"
-        value="10"
-        min="1"
-        max="100"
-        style="width: 60px; margin-left: 10px"
-      />
+      <input type="number" id="speedInput" value="10" min="1" max="100" style="width: 60px; margin-left: 10px" />
       <button class="btn btn-primary" onclick="setSpeed()">Set Speed</button>
     </div>
   </div>
 
-  <div
-    style="margin: 20px 0; padding: 15px; background: white; border-radius: 8px"
-  >
+  <div style="margin: 20px 0; padding: 15px; background: white; border-radius: 8px">
     <div style="display: flex; align-items: center; gap: 10px">
       <strong>Timeline:</strong>
-      <input
-        type="range"
-        id="timeScrubber"
-        min="0"
-        max="100"
-        value="0"
-        disabled
-        style="flex: 1; height: 8px; cursor: pointer"
-        oninput="updateScrubberDisplay()"
-        onchange="seekToPosition()"
-      />
-      <span
-        id="scrubberPosition"
-        style="min-width: 80px; font-family: monospace"
-        >0 / 0</span
-      >
+      <input type="range" id="timeScrubber" min="0" max="100" value="0" disabled
+        style="flex: 1; height: 8px; cursor: pointer" oninput="onScrubberInput()" onchange="onScrubberChange()" />
+      <span id="scrubberPosition" style="min-width: 80px; font-family: monospace">0 / 0</span>
     </div>
   </div>
 
@@ -227,7 +187,7 @@
             <th>Price</th>
             <th>Lots</th>
             <th>Change</th>
-            <th>10s</th>
+            <th>3m</th>
           </tr>
         </thead>
         <tbody id="bidBody">
@@ -248,7 +208,7 @@
             <th>Price</th>
             <th>Lots</th>
             <th>Change</th>
-            <th>10s</th>
+            <th>3m</th>
           </tr>
         </thead>
         <tbody id="offerBody">
@@ -259,7 +219,59 @@
       </table>
     </div>
   </div>
+
+  <!-- Confirmation Modal -->
+  <div id="confirmModal"
+    style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000; justify-content: center; align-items: center;">
+    <div
+      style="background: white; padding: 30px; border-radius: 12px; max-width: 500px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+      <h3 style="margin: 0 0 15px 0; color: #333; display: flex; align-items: center;">
+        <span style="font-size: 24px; margin-right: 10px;">⚠️</span>
+        <span>Large File Warning</span>
+      </h3>
+      <div id="confirmMessage" style="margin: 0 0 25px 0; color: #555; font-size: 14px; line-height: 1.6;"></div>
+      <div style="display: flex; gap: 10px; justify-content: flex-end;">
+        <button id="confirmCancel" class="btn btn-secondary"
+          style="background: #6c757d; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600;">Cancel</button>
+        <button id="confirmOk" class="btn btn-success"
+          style="background: #28a745; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-weight: 600;">Continue
+          Loading</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading Overlay -->
+  <div id="loadingOverlay"
+    style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 9999; justify-content: center; align-items: center;">
+    <div
+      style="background: white; padding: 40px; border-radius: 12px; text-align: center; min-width: 400px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+      <div class="spinner"
+        style="margin: 0 auto 20px; width: 50px; height: 50px; border: 5px solid #f3f3f3; border-top: 5px solid #007bff; border-radius: 50%; animation: spin 1s linear infinite;">
+      </div>
+      <h3 id="loadingTitle" style="margin: 0 0 15px 0; color: #333;">Loading Data...</h3>
+      <p id="loadingStatus" style="margin: 0 0 20px 0; color: #666; font-size: 14px;">Preparing to load file...</p>
+      <div
+        style="width: 100%; background: #e0e0e0; border-radius: 10px; overflow: hidden; height: 25px; margin-bottom: 10px;">
+        <div id="loadingProgressBar"
+          style="width: 0%; height: 100%; background: linear-gradient(90deg, #007bff, #0056b3); transition: width 0.3s ease; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 12px;">
+        </div>
+      </div>
+      <p id="loadingProgressText" style="margin: 0; color: #888; font-size: 13px;">0%</p>
+    </div>
+  </div>
 </div>
+
+<style>
+  @keyframes spin {
+    0% {
+      transform: rotate(0deg);
+    }
+
+    100% {
+      transform: rotate(360deg);
+    }
+  }
+</style>
 
 <script>
   let updateCount = 0;
@@ -269,18 +281,81 @@
   let renderInterval = null; // Fix: Initialize renderInterval
   let lastBidTimestamp = null;
   let lastOfferTimestamp = null;
+  let seekDebounceTimer = null;
+  let isSeeking = false;
+
+  // Modal and overlay functions
+  function showConfirmModal(message) {
+    return new Promise((resolve) => {
+      const modal = document.getElementById("confirmModal");
+      const messageDiv = document.getElementById("confirmMessage");
+      const okBtn = document.getElementById("confirmOk");
+      const cancelBtn = document.getElementById("confirmCancel");
+
+      messageDiv.innerHTML = message;
+      modal.style.display = "flex";
+
+      function cleanup() {
+        modal.style.display = "none";
+        okBtn.onclick = null;
+        cancelBtn.onclick = null;
+      }
+
+      okBtn.onclick = () => {
+        cleanup();
+        resolve(true);
+      };
+
+      cancelBtn.onclick = () => {
+        cleanup();
+        resolve(false);
+      };
+    });
+  }
+
+  function showLoadingOverlay() {
+    document.getElementById("loadingOverlay").style.display = "flex";
+  }
+
+  function hideLoadingOverlay() {
+    document.getElementById("loadingOverlay").style.display = "none";
+  }
+
+  function updateLoadingProgress(percent, current, total) {
+    const progressBar = document.getElementById("loadingProgressBar");
+    const progressText = document.getElementById("loadingProgressText");
+    const statusText = document.getElementById("loadingStatus");
+
+    const roundedPercent = Math.round(percent);
+    progressBar.style.width = roundedPercent + "%";
+    progressBar.textContent = roundedPercent + "%";
+    progressText.textContent = `${roundedPercent}% - ${current.toLocaleString()} / ${total.toLocaleString()} rows`;
+
+    // Estimate time remaining (rough calculation)
+    if (window.loadStartTime && percent > 5) {
+      const elapsed = (Date.now() - window.loadStartTime) / 1000; // seconds
+      const rate = current / elapsed; // rows per second
+      const remaining = (total - current) / rate; // seconds
+      const mins = Math.floor(remaining / 60);
+      const secs = Math.floor(remaining % 60);
+      statusText.textContent = `Estimated time remaining: ${mins > 0 ? mins + 'm ' : ''}${secs}s`;
+    } else {
+      statusText.textContent = `Loading data chunks...`;
+    }
+  }
 
   // Client-side replay data
-  let replayData = []; 
+  let replayData = [];
   let currentIndex = 0;
-  let isClientSide = true; 
+  let isClientSide = true;
   let playbackSpeed = 1.0;
   let lastRenderTime = 0;
 
-  // 10-second window tracking (per-price)
-  let changeWindow = []; // Array of {timestamp, price, side, change}
-  const WINDOW_SIZE_MS = 10000; // 10 seconds
-  let priceChangeCache = { bids: {}, offers: {} }; // Cache for display
+  // State
+  let minuteBaseState = { bids: {}, offers: {} };
+  let currentMinuteIndex = -1;
+  let frameChanges = { bids: {}, offers: {} };
+  let lastRenderedState = { bids: {}, offers: {} }; // For calculating visual change since last frame if needed, but we use frameChanges accumulator
 
   async function loadFileList() {
     try {
@@ -312,65 +387,203 @@
     }
 
     console.log("[LOAD] Loading file:", csvPath);
-    document.getElementById("status").textContent = "Loading data...";
 
     try {
-      // 1. Tell backend to load CSV (needed for parsing)
-      const response = await fetch("/api/replay/load", {
+      // 1. Get metadata first to check file size
+      document.getElementById("status").textContent = "Checking file...";
+      const metaResponse = await fetch("/api/replay/metadata", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ csv_path: csvPath }),
       });
+      const meta = await metaResponse.json();
 
-      const data = await response.json();
-      
-      if (!data.success) {
-        throw new Error(data.error);
+      if (!meta.success) {
+        throw new Error(meta.error);
       }
 
-      // 2. Fetch full dataset for client-side replay
-      console.log("[LOAD] Fetching full dataset...");
-      const dataResponse = await fetch("/api/replay/data");
-      const fullData = await dataResponse.json();
+      console.log(`[LOAD] File metadata: ${meta.file_size_mb}MB, ~${meta.estimated_rows.toLocaleString()} rows`);
 
-      if (fullData.success) {
-        replayData = fullData.rows; // [ts, price, lots, side]
-        console.log(`[LOAD] Client-side data loaded: ${replayData.length} rows`);
-        
-        isClientSide = true;
-        currentIndex = 0;
-        replayState = "stopped";
-        
-        // Reset state
-        orderbookState = { bids: {}, offers: {} };
-        changeWindow = [];
-        priceChangeCache = { bids: {}, offers: {} };
-        
-        // Update UI
-        document.getElementById("status").textContent = "Ready (Client-Side)";
-        document.getElementById("progress").textContent = `0/${replayData.length}`;
-        document.getElementById("currentTime").textContent = "--:--:--";
-        document.getElementById("updateCount").textContent = "0";
-        
-        // Setup scrubber
-        const scrubber = document.getElementById("timeScrubber");
-        scrubber.max = replayData.length - 1;
-        scrubber.value = 0;
-        scrubber.disabled = false;
-        document.getElementById("scrubberPosition").textContent = `0 / ${replayData.length.toLocaleString()}`;
-        
-        // Initial render
-        renderFrame(true); 
+      // 2. Warn if large file (using custom modal to avoid browser blocking)
+      if (meta.file_size_mb > 50 || meta.estimated_rows > 2000000) {
+        const message = `
+          <p style="margin: 0 0 10px 0;"><strong>File:</strong> ${meta.filename}</p>
+          <p style="margin: 0 0 10px 0;"><strong>Size:</strong> ${meta.file_size_mb} MB</p>
+          <p style="margin: 0 0 10px 0;"><strong>Rows:</strong> ~${meta.estimated_rows.toLocaleString()}</p>
+          <p style="margin: 15px 0 0 0; padding-top: 15px; border-top: 1px solid #ddd;">
+            This file will take <strong>10-60 seconds</strong> to load.<br>
+            Your browser will remain responsive during loading.
+          </p>
+        `;
 
+        const confirmed = await showConfirmModal(message);
+
+        if (!confirmed) {
+          document.getElementById("status").textContent = "Load cancelled by user";
+          console.log("[LOAD] User cancelled large file load");
+          return;
+        }
+      }
+
+      // 3. Use chunked loading for large files, direct for small files
+      if (meta.estimated_rows > 500000) {
+        await loadFileChunked(csvPath, meta);
       } else {
-        throw new Error("Failed to fetch full data");
+        await loadFileDirect(csvPath);
       }
 
     } catch (error) {
       alert("Error: " + error.message);
       console.error("[LOAD] Exception:", error);
       document.getElementById("status").textContent = "Error";
+      hideLoadingOverlay();
     }
+  }
+
+  async function loadFileDirect(csvPath) {
+    console.log("[LOAD] Using direct load for small file");
+    document.getElementById("status").textContent = "Loading data...";
+
+    // 1. Tell backend to load CSV (needed for parsing)
+    const response = await fetch("/api/replay/load", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ csv_path: csvPath }),
+    });
+
+    const data = await response.json();
+
+    if (!data.success) {
+      throw new Error(data.error);
+    }
+
+    // 2. Fetch full dataset for client-side replay
+    console.log("[LOAD] Fetching full dataset...");
+    const dataResponse = await fetch("/api/replay/data");
+    const fullData = await dataResponse.json();
+
+    if (fullData.success) {
+      replayData = fullData.rows; // [ts, price, lots, side]
+      console.log(`[LOAD] Client-side data loaded: ${replayData.length} rows`);
+
+      isClientSide = true;
+      currentIndex = 0;
+      replayState = "stopped";
+
+      // Reset state
+      orderbookState = { bids: {}, offers: {} };
+      minuteBaseState = { bids: {}, offers: {} };
+      currentMinuteIndex = -1;
+      frameChanges = { bids: {}, offers: {} };
+
+      // Update UI
+      document.getElementById("status").textContent = "Ready (Client-Side)";
+      document.getElementById("progress").textContent = `0/${replayData.length}`;
+      document.getElementById("currentTime").textContent = "--:--:--";
+      document.getElementById("updateCount").textContent = "0";
+
+      // Setup scrubber
+      const scrubber = document.getElementById("timeScrubber");
+      scrubber.max = replayData.length - 1;
+      scrubber.value = 0;
+      scrubber.disabled = false;
+      document.getElementById("scrubberPosition").textContent = `0 / ${replayData.length.toLocaleString()}`;
+
+      // Initial render
+      renderFrame(true);
+
+    } else {
+      throw new Error("Failed to fetch full data");
+    }
+  }
+
+  async function loadFileChunked(csvPath, meta) {
+    console.log("[LOAD] Using chunked load for large file");
+
+    // Show loading overlay
+    showLoadingOverlay();
+    window.loadStartTime = Date.now();
+    document.getElementById("loadingTitle").textContent = "Loading Large File";
+    document.getElementById("loadingStatus").textContent = `Preparing to load ${meta.estimated_rows.toLocaleString()} rows...`;
+
+    // 1. Tell backend to load CSV (for parsing into memory on server)
+    const response = await fetch("/api/replay/load", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ csv_path: csvPath }),
+    });
+
+    const data = await response.json();
+
+    if (!data.success) {
+      hideLoadingOverlay();
+      throw new Error(data.error);
+    }
+
+    // 2. Load data in chunks from server
+    const CHUNK_SIZE = 100000; // 100k rows per chunk
+    let offset = 0;
+    let allRows = [];
+    const totalRows = data.total_rows;
+
+    while (true) {
+      const chunkResponse = await fetch(
+        `/api/replay/data/chunked?offset=${offset}&chunk_size=${CHUNK_SIZE}`
+      );
+      const chunkData = await chunkResponse.json();
+
+      if (!chunkData.success) {
+        hideLoadingOverlay();
+        throw new Error(chunkData.error);
+      }
+
+      allRows = allRows.concat(chunkData.rows);
+
+      // Update progress
+      const progress = (allRows.length / totalRows) * 100;
+      updateLoadingProgress(progress, allRows.length, totalRows);
+
+      console.log(`[LOAD] Loaded ${allRows.length} / ${totalRows} rows (${Math.round(progress)}%)`);
+
+      if (!chunkData.has_more) break;
+      offset += CHUNK_SIZE;
+
+      // Yield to browser to stay responsive
+      await new Promise(r => setTimeout(r, 10));
+    }
+
+    // 3. Initialize with loaded data
+    replayData = allRows;
+    console.log(`[LOAD] Chunked load complete: ${replayData.length} rows`);
+
+    isClientSide = true;
+    currentIndex = 0;
+    replayState = "stopped";
+
+    // Reset state
+    orderbookState = { bids: {}, offers: {} };
+    minuteBaseState = { bids: {}, offers: {} };
+    currentMinuteIndex = -1;
+    frameChanges = { bids: {}, offers: {} };
+
+    // Update UI
+    document.getElementById("status").textContent = "Ready (Client-Side)";
+    document.getElementById("progress").textContent = `0/${replayData.length}`;
+    document.getElementById("currentTime").textContent = "--:--:--";
+    document.getElementById("updateCount").textContent = "0";
+
+    // Setup scrubber
+    const scrubber = document.getElementById("timeScrubber");
+    scrubber.max = replayData.length - 1;
+    scrubber.value = 0;
+    scrubber.disabled = false;
+    document.getElementById("scrubberPosition").textContent = `0 / ${replayData.length.toLocaleString()}`;
+
+    // Hide loading overlay
+    hideLoadingOverlay();
+
+    // Initial render
+    renderFrame(true);
   }
 
   function startReplay() {
@@ -381,14 +594,14 @@
       console.log(`[START] Client-side replay @ ${speed}x`);
       replayState = "running";
       lastRenderTime = performance.now();
-      
+
       // Update UI
       updateControlsRunning();
-      
+
       // Start loop
       if (renderInterval) cancelAnimationFrame(renderInterval);
       renderInterval = requestAnimationFrame(gameLoop);
-      
+
       return;
     }
 
@@ -424,19 +637,20 @@
       console.log("[STOP] Client-side stopped");
       replayState = "stopped";
       cancelAnimationFrame(renderInterval);
-      
+
       currentIndex = 0;
       orderbookState = { bids: {}, offers: {} };
-      changeWindow = [];
-      priceChangeCache = { bids: {}, offers: {} };
-      
+      minuteBaseState = { bids: {}, offers: {} };
+      currentMinuteIndex = -1;
+      frameChanges = { bids: {}, offers: {} };
+
       renderFrame(true); // Reset view
       updateControlsStopped();
       return;
     }
     stopReplayServer();
   }
-  
+
   function updateControlsRunning() {
     document.getElementById("startBtn").disabled = true;
     document.getElementById("pauseBtn").disabled = false;
@@ -469,7 +683,7 @@
     document.getElementById("fileSelect").disabled = false;
     document.getElementById("status").textContent = "STOPPED (Client)";
     document.getElementById("speed").textContent = "1.0x";
-    
+
     // Clear tables
     document.getElementById("bidBody").innerHTML = '<tr><td colspan="4" style="text-align:center; color:#888;">Stopped</td></tr>';
     document.getElementById("offerBody").innerHTML = '<tr><td colspan="4" style="text-align:center; color:#888;">Stopped</td></tr>';
@@ -478,274 +692,362 @@
   function setSpeed() {
     const speed = parseFloat(document.getElementById("speedInput").value);
     playbackSpeed = speed;
-    
+
     if (isClientSide) {
       document.getElementById("speed").textContent = speed + "x";
     } else {
       setSpeedServer(speed);
     }
   }
-  
-  function seekToPosition() {
+
+  // Scrubber event handlers with debouncing
+  function onScrubberInput() {
+    // Only update display, don't seek yet
+    updateScrubberDisplay();
+  }
+
+  function onScrubberChange() {
+    // Debounce the actual seek operation
+    clearTimeout(seekDebounceTimer);
+    seekDebounceTimer = setTimeout(() => {
+      seekToPosition();
+    }, 50); // 50ms debounce
+  }
+
+  async function seekToPosition() {
     const scrubber = document.getElementById("timeScrubber");
     const position = parseInt(scrubber.value);
-    
-    if (isClientSide) {
-      // Client-side seek (Instant!)
-      
-      // If dragging backwards, we need to rebuild state from 0
-      // If dragging forwards, we can apply forward changes
-      // For simplicity and correctness, we'll just rebuild from 0 if moving backwards
-      // or if gap is too large.
-      // But actually, for "scrubbing", we can just rebuild. 
-      // JavaScript is fast enough to rebuild 100k rows in ms.
-      
-      // Optimization: Rebuild from scratch (safest)
-      // On M1 Macbook, 1M iterations is < 10ms. 
-      // If it's slow, we can optimize later.
-      
-      if (position < currentIndex) {
-         // Moving back: full reset
-         currentIndex = 0;
-         orderbookState = { bids: {}, offers: {} };
-      }
-      
-      // forward replay from currentIndex to position
-      // We don't want to render every frame, just update state
-      const targetIndex = Math.min(position, replayData.length - 1);
-      
-      while (currentIndex < targetIndex) {
-         const row = replayData[currentIndex];
-         // row: [ts, price, lots, side]
-         // side 0=BID, 1=OFFER
-         const side = row[3] === 0 ? 'bids' : 'offers';
-         const price = row[1];
-         const lots = row[2];
-         
-         orderbookState[side][price] = lots;
-         currentIndex++;
-      }
-      
-      // Reset change window on seek so we don't show old changes
-      changeWindow = [];
-      priceChangeCache = { bids: {}, offers: {} };
-      
-      // Fix: Sync virtualTime to the new position's timestamp
-      if (currentIndex < replayData.length) {
-          window.virtualTime = replayData[currentIndex][0];
-      }
-      
-      // Update scrubber UI
-      document.getElementById("scrubberPosition").textContent = `${currentIndex.toLocaleString()} / ${replayData.length.toLocaleString()}`;
-      
-      renderFrame(true);
+
+    if (!isClientSide) {
+      seekToPositionServer(position);
       return;
     }
-    
-    seekToPositionServer(position);
+
+    // Prevent concurrent seeks
+    if (isSeeking) {
+      console.log("[SEEK] Already seeking, ignoring...");
+      return;
+    }
+
+    isSeeking = true;
+
+    // Pause if running
+    const wasRunning = replayState === "running";
+    if (wasRunning) {
+      replayState = "paused";
+      cancelAnimationFrame(renderInterval);
+    }
+
+    // Show seeking indicator
+    const statusEl = document.getElementById("status");
+    const originalStatus = statusEl.textContent;
+    statusEl.textContent = "Seeking...";
+
+    try {
+      // Logic: If moving backwards, full reset
+      if (position < currentIndex) {
+        currentIndex = 0;
+        orderbookState = { bids: {}, offers: {} };
+        minuteBaseState = { bids: {}, offers: {} };
+        currentMinuteIndex = -1;
+      }
+
+      // Forward replay from currentIndex to position
+      const targetIndex = Math.min(position, replayData.length - 1);
+      const CHUNK_SIZE = 10000; // Process 10k rows at a time
+
+      // Async chunked processing to avoid blocking UI
+      while (currentIndex < targetIndex) {
+        const chunkEnd = Math.min(currentIndex + CHUNK_SIZE, targetIndex);
+
+        // Process chunk synchronously
+        for (let i = currentIndex; i < chunkEnd; i++) {
+          processRow(replayData[i]);
+        }
+
+        currentIndex = chunkEnd;
+
+        // Yield to UI thread every chunk
+        if (currentIndex < targetIndex) {
+          await new Promise(r => setTimeout(r, 0));
+        }
+      }
+
+      // Reset instantaneous frame changes as we just jumped
+      frameChanges = { bids: {}, offers: {} };
+
+      // Sync virtualTime
+      if (currentIndex < replayData.length) {
+        window.virtualTime = replayData[currentIndex][0];
+      }
+
+      // Update scrubber UI
+      document.getElementById("scrubberPosition").textContent = `${currentIndex.toLocaleString()} / ${replayData.length.toLocaleString()}`;
+
+      // Render the frame
+      renderFrame(true);
+
+      // Restore status
+      statusEl.textContent = wasRunning ? "RUNNING (Client)" : "Ready (Client-Side)";
+
+      // Resume if was running
+      if (wasRunning) {
+        replayState = "running";
+        lastRenderTime = performance.now();
+        renderInterval = requestAnimationFrame(gameLoop);
+      }
+    } finally {
+      isSeeking = false;
+    }
   }
 
   // --- Client-Side Loop ---
-  
+
+  // Scans forward from 'startIdx' to find the state at 'endTimestamp'
+  // Returns the difference between State@EndTime and current OrderbookState
+  // OPTIMIZED: Limits scan range to prevent performance issues with large files
+  function calculateForecast2(startIdx, endTimestamp) {
+    let tempParams = { bids: {}, offers: {} };
+
+    // OPTIMIZATION: Limit scan to prevent checking millions of rows
+    const MAX_SCAN_ROWS = 50000; // Maximum 50k rows to scan
+    const scanLimit = Math.min(startIdx + MAX_SCAN_ROWS, replayData.length);
+
+    // Scan forward
+    let i = startIdx;
+    while (i < scanLimit) {
+      const row = replayData[i];
+      if (row[0] >= endTimestamp) break; // Reached end of window
+
+      const price = row[1];
+      const lots = row[2];
+      const side = row[3] === 0 ? 'bids' : 'offers';
+
+      tempParams[side][price] = lots;
+      i++;
+    }
+
+    const diffs = { bids: {}, offers: {} };
+
+    // Merge keys to find all prices
+    const allBids = new Set([...Object.keys(orderbookState.bids), ...Object.keys(tempParams.bids)]);
+    const allOffers = new Set([...Object.keys(orderbookState.offers), ...Object.keys(tempParams.offers)]);
+
+    allBids.forEach(p => {
+      const endVal = tempParams.bids[p] !== undefined ? tempParams.bids[p] : (orderbookState.bids[p] || 0);
+      const startVal = orderbookState.bids[p] || 0;
+      if (endVal - startVal !== 0) diffs.bids[p] = endVal - startVal;
+    });
+
+    allOffers.forEach(p => {
+      const endVal = tempParams.offers[p] !== undefined ? tempParams.offers[p] : (orderbookState.offers[p] || 0);
+      const startVal = orderbookState.offers[p] || 0;
+      if (endVal - startVal !== 0) diffs.offers[p] = endVal - startVal;
+    });
+
+    return diffs;
+  }
+
+  function processRow(row) {
+    // row: [ts, price, lots, side]
+    const ts = row[0];
+    const price = row[1];
+    const lots = row[2];
+    const side = row[3] === 0 ? 'bids' : 'offers';
+
+    // 1. Check 3-Minute Boundary
+    // 3m buckets: 0-2, 3-5, 6-8...
+    // 180,000 ms
+    const bucketIndex = Math.floor(ts / 180000); // 3 minutes
+
+    if (bucketIndex > currentMinuteIndex) {
+      // New 3m bucket started!
+      const bucketEndTime = (bucketIndex + 1) * 180000;
+
+      // Update State
+      minuteBaseState = {
+        bids: { ...orderbookState.bids },
+        offers: { ...orderbookState.offers }
+      };
+      currentMinuteIndex = bucketIndex;
+
+      // Calculate Forecast
+      forecastedChanges = calculateForecast2(currentIndex, bucketEndTime);
+    }
+
+    // 2. Track Change (Instantaneous / Frame-based)
+    const oldLots = orderbookState[side][price] || 0;
+    const diff = lots - oldLots;
+
+    if (diff !== 0) {
+      frameChanges[side][price] = (frameChanges[side][price] || 0) + diff;
+    }
+
+    // 3. Update Actual State
+    orderbookState[side][price] = lots;
+  }
+
   function gameLoop(timestamp) {
     if (replayState !== "running") return;
-    
-    // Calculate delta time
+
     const elapsed = timestamp - lastRenderTime;
     lastRenderTime = timestamp;
-    
-    // How many milliseconds of "market time" to advance?
-    // elapsed (real ms) * playbackSpeed
-    // e.g. 16ms * 10x = 160ms of market data
-    
-    // However, our data is tick-based, not strictly time-based in the array index.
-    // But we have timestamps in row[0].
-    
+
     if (currentIndex >= replayData.length) {
       stopReplay();
       return;
     }
-    
+
     const currentRow = replayData[currentIndex];
-    const currentTs = currentRow[0]; // timestamp in ms
-    
-    // We want to advance until: nextRow.timestamp > currentTs + (elapsed * speed)
-    // But for simplicity in a tick-replay, we often just want to perform X ticks per frame?
-    // Let's stick to time-based for accuracy.
-    
-    // We need a "virtual time" tracker
+    const currentTs = currentRow[0];
+
     if (!window.virtualTime) window.virtualTime = currentTs;
     window.virtualTime += (elapsed * playbackSpeed);
-    
-    // Process all rows that happened before virtualTime
+
+    // Process rows
     let updates = 0;
     while (currentIndex < replayData.length) {
       const row = replayData[currentIndex];
-      if (row[0] > window.virtualTime) break; // Future event
-      
-      // Apply Update
-      // row: [ts, price, lots, side]
-      const price = row[1];
-      const lots = row[2];
-      const side = row[3] === 0 ? 'bids' : 'offers';
-      
-      // 10s Change Logic
-      const oldLots = orderbookState[side][price] || 0;
-      const change = lots - oldLots;
-      
-      if (change !== 0) {
-        changeWindow.push({
-           timestamp: row[0],
-           price: price,
-           side: side === 'bids' ? 'BID' : 'OFFER',
-           change: change // Fix: Store signed change, not Math.abs
-        });
-      }
-      
-      // Update State
-      orderbookState[side][price] = lots;
-      
+      if (row[0] > window.virtualTime) break;
+
+      processRow(row);
+
       currentIndex++;
       updates++;
-      
-      // Cap updates per frame to avoid freeze if speed is huge
-      if (updates > 10000) {
-        window.virtualTime = row[0]; // Sync time to avoid infinite catchup
+
+      if (updates > 20000) { // Safety cap
+        window.virtualTime = row[0];
         break;
       }
-    }
-    
-    // Clean old changes (older than 10s from virtualTime)
-    const cutoff = window.virtualTime - WINDOW_SIZE_MS;
-    // Optimization: binary search or just filter (filter is O(N))
-    // Since it's sorted by time, we can just slice from front
-    while (changeWindow.length > 0 && changeWindow[0].timestamp < cutoff) {
-      changeWindow.shift();
-    }
-    
-    // Re-aggregate changes for display
-    priceChangeCache = { bids: {}, offers: {} };
-    for (const entry of changeWindow) {
-        const s = entry.side === 'BID' ? 'bids' : 'offers';
-        priceChangeCache[s][entry.price] = (priceChangeCache[s][entry.price] || 0) + entry.change;
     }
 
     // Render logic
     renderFrame();
-    
+
+    // Important: We reset frame changes AFTER render, but wait, 
+    // if we reset immediately, the user sees it for 0ms?
+    // No, renderFrame updates the DOM. The DOM persists until next update.
+    // So resetting here is correct for the NEXT frame to accumulate new changes.
+    frameChanges = { bids: {}, offers: {} };
+
     renderInterval = requestAnimationFrame(gameLoop);
   }
-  
+
   function renderFrame(force = false) {
     // throttle rendering to 30fps? or just render every frame.
     // DOM updates are expensive.
-    
+
     // Update basic stats
     document.getElementById("progress").textContent = `${currentIndex}/${replayData.length}`;
     if (replayData.length > 0 && currentIndex > 0) {
-       const ts = new Date(replayData[currentIndex-1][0]); 
-       document.getElementById("currentTime").textContent = ts.toLocaleTimeString("en-US", {hour12:false});
+      const ts = new Date(replayData[currentIndex - 1][0]);
+      document.getElementById("currentTime").textContent = ts.toLocaleTimeString("en-US", { hour12: false });
     }
-    
+
     // Update Scrubber (visually only)
     document.getElementById("timeScrubber").value = currentIndex;
-    
+
     // Sort and render top 20
     const bids = Object.entries(orderbookState.bids)
-      .map(([p, l]) => ({price: parseFloat(p), lots: l}))
+      .map(([p, l]) => ({ price: parseFloat(p), lots: l }))
       .filter(x => x.lots > 0)
-      .sort((a,b) => b.price - a.price)
+      .sort((a, b) => b.price - a.price)
       .slice(0, 20);
-      
+
     const offers = Object.entries(orderbookState.offers)
-      .map(([p, l]) => ({price: parseFloat(p), lots: l}))
+      .map(([p, l]) => ({ price: parseFloat(p), lots: l }))
       .filter(x => x.lots > 0)
-      .sort((a,b) => a.price - b.price)
+      .sort((a, b) => a.price - b.price)
       .slice(0, 20);
-      
-     // Update HTML
-     const bidBody = document.getElementById("bidBody");
-     bidBody.innerHTML = bids.map(row => {
-        const change10s = priceChangeCache.bids[row.price] || 0;
-        return `<tr>
-             <td>${row.price.toFixed(0)}</td>
-             <td>${row.lots.toLocaleString()}</td>
-             <td><span style="color:#888;">0</span></td> 
-             <td style="font-size:0.9em;">${formatChange(change10s)}</td>
+
+    // Update HTML
+    const bidBody = document.getElementById("bidBody");
+    bidBody.innerHTML = bids.map(row => {
+      const changeFrame = frameChanges.bids[row.price] || 0;
+
+      // 3m Forecast Change (Static for window)
+      const change3m = forecastedChanges.bids[row.price] || 0;
+
+      return `<tr>
+              <td>${row.price.toFixed(0)}</td>
+              <td>${row.lots.toLocaleString()}</td>
+              <td>${formatChange(changeFrame)}</td> 
+              <td style="font-size:0.9em;; font-weight:bold;">${formatChange(change3m)}</td>
         </tr>`;
-     }).join(""); // note: instantaneous change is hard to track in bulk, showing 0 for now or compute diff from last frame?
-     // For simplicity, we just show 10s change. Instant change column is less useful in fast replay.
-     
-     const offerBody = document.getElementById("offerBody");
-     offerBody.innerHTML = offers.map(row => {
-        const change10s = priceChangeCache.offers[row.price] || 0;
-        return `<tr>
-             <td>${row.price.toFixed(0)}</td>
-             <td>${row.lots.toLocaleString()}</td>
-             <td><span style="color:#888;">0</span></td> 
-             <td style="font-size:0.9em;">${formatChange(change10s)}</td>
+    }).join("");
+
+    const offerBody = document.getElementById("offerBody");
+    offerBody.innerHTML = offers.map(row => {
+      const changeFrame = frameChanges.offers[row.price] || 0;
+      const change3m = forecastedChanges.offers[row.price] || 0;
+
+      return `<tr>
+              <td>${row.price.toFixed(0)}</td>
+              <td>${row.lots.toLocaleString()}</td>
+              <td>${formatChange(changeFrame)}</td> 
+              <td style="font-size:0.9em; font-weight:bold;">${formatChange(change3m)}</td>
         </tr>`;
-     }).join("");
-     
-     document.getElementById("levels").textContent = bids.length + offers.length;
+    }).join("");
+
+    document.getElementById("levels").textContent = bids.length + offers.length;
   }
 
   // --- Legacy Server Calls (Renamed) ---
-  
+
   async function startReplayServer(speed) {
-      console.log(`[START] Starting replay with speed ${speed}x`);
-      const response = await fetch("/api/replay/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ speed_multiplier: speed }),
-      });
-      // ... (rest of old start logic if needed, but we rely on client side now)
-      // For brevity, assuming client side works. logic is same as before.
-      const data = await response.json();
-      if (data.success) {
-         replayState = "running";
-         updateControlsRunning();
-      }
+    console.log(`[START] Starting replay with speed ${speed}x`);
+    const response = await fetch("/api/replay/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ speed_multiplier: speed }),
+    });
+    // ... (rest of old start logic if needed, but we rely on client side now)
+    // For brevity, assuming client side works. logic is same as before.
+    const data = await response.json();
+    if (data.success) {
+      replayState = "running";
+      updateControlsRunning();
+    }
   }
-  
+
   async function pauseReplayServer() {
-      const response = await fetch("/api/replay/pause", { method: "POST" });
-       const data = await response.json();
-       if(data.success) { replayState="paused"; updateControlsPaused(); }
+    const response = await fetch("/api/replay/pause", { method: "POST" });
+    const data = await response.json();
+    if (data.success) { replayState = "paused"; updateControlsPaused(); }
   }
-  
+
   async function resumeReplayServer() {
-      const response = await fetch("/api/replay/resume", { method: "POST" });
-      const data = await response.json();
-       if(data.success) { replayState="running"; updateControlsRunning(); }
+    const response = await fetch("/api/replay/resume", { method: "POST" });
+    const data = await response.json();
+    if (data.success) { replayState = "running"; updateControlsRunning(); }
   }
-  
+
   async function stopReplayServer() {
-      await fetch("/api/replay/stop", { method: "POST" });
-      replayState = "stopped";
-      updateControlsStopped();
+    await fetch("/api/replay/stop", { method: "POST" });
+    replayState = "stopped";
+    updateControlsStopped();
   }
-  
+
   async function setSpeedServer(speed) {
-      await fetch("/api/replay/speed", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ multiplier: speed }),
-      });
+    await fetch("/api/replay/speed", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ multiplier: speed }),
+    });
   }
-  
+
   async function seekToPositionServer(position) {
-       await fetch("/api/replay/seek", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ position: position }),
-      });
+    await fetch("/api/replay/seek", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ position: position }),
+    });
   }
 
   async function updateOrderbook() {
     // Only fetch API if running (not stopped or paused) AND not client-side
     if (replayState !== "running" || isClientSide) {
-      return; 
+      return;
     }
 
     try {
@@ -773,30 +1075,30 @@
         const bidBody = document.getElementById("bidBody");
         if (data.bids && data.bids.length > 0) {
           bidBody.innerHTML = data.bids.map((row) => {
-              return `<tr>
+            return `<tr>
                 <td>${row.price.toFixed(0)}</td>
                 <td>${row.lots.toLocaleString()}</td>
                 <td><span style="color:#888;">0</span></td>
                 <td style="color:#888;">-</td>
               </tr>`;
-            }).join("");
+          }).join("");
         }
 
         // Update OFFER table
         const offerBody = document.getElementById("offerBody");
         if (data.offers && data.offers.length > 0) {
           offerBody.innerHTML = data.offers.map((row) => {
-              return `<tr>
+            return `<tr>
                 <td>${row.price.toFixed(0)}</td>
                 <td>${row.lots.toLocaleString()}</td>
                 <td><span style="color:#888;">0</span></td>
                 <td style="color:#888;">-</td>
               </tr>`;
-            }).join("");
+          }).join("");
         }
-        
+
         if (data.running !== undefined) {
-             document.getElementById("progress").textContent = `${data.index || 0}/${data.total_rows || 0}`;
+          document.getElementById("progress").textContent = `${data.index || 0}/${data.total_rows || 0}`;
         }
       }
     } catch (error) {

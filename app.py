@@ -418,6 +418,56 @@ def api_replay_list_files():
             'error': str(e)
         }), 500
 
+@app.route('/api/replay/metadata', methods=['POST'])
+def api_replay_metadata():
+    """Get file metadata without loading full file"""
+    data = request.get_json() or {}
+    csv_path = data.get('csv_path')
+    
+    if not csv_path:
+        return jsonify({
+            'success': False,
+            'error': 'csv_path required'
+        }), 400
+    
+    try:
+        csv_file = Path(csv_path)
+        if not csv_file.exists():
+            return jsonify({
+                'success': False,
+                'error': 'File not found'
+            }), 404
+        
+        # Quick line count without loading entire file
+        import subprocess
+        try:
+            result = subprocess.run(
+                ['wc', '-l', str(csv_file)],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            line_count = int(result.stdout.split()[0]) - 1  # subtract header
+        except Exception as e:
+            logger.warning(f"Could not count lines: {e}")
+            line_count = -1
+        
+        file_size_mb = csv_file.stat().st_size / 1024 / 1024
+        
+        return jsonify({
+            'success': True,
+            'file_size_mb': round(file_size_mb, 2),
+            'estimated_rows': line_count,
+            'filename': csv_file.name
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting metadata: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 @app.route('/api/replay/load', methods=['POST'])
 def api_replay_load():
     """Load a CSV file for replay"""
@@ -625,6 +675,62 @@ def api_replay_get_full_data():
         'total_rows': len(rows),
         'ticker': replay_engine.get_status().get('csv_path', '').split('_')[-1]
     })
+
+@app.route('/api/replay/data/chunked', methods=['GET'])
+def api_replay_get_chunked_data():
+    """Get data in chunks for large files"""
+    if not replay_engine or not replay_engine.data_rows:
+        return jsonify({
+            'success': False,
+            'error': 'No data loaded'
+        }), 400
+    
+    try:
+        chunk_size = int(request.args.get('chunk_size', 100000))
+        offset = int(request.args.get('offset', 0))
+        
+        total = len(replay_engine.data_rows)
+        end = min(offset + chunk_size, total)
+        
+        if offset >= total:
+            return jsonify({
+                'success': True,
+                'rows': [],
+                'offset': offset,
+                'chunk_size': 0,
+                'total_rows': total,
+                'has_more': False
+            })
+        
+        chunk = replay_engine.data_rows[offset:end]
+        
+        # Convert to compact format
+        rows = []
+        for row in chunk:
+            rows.append([
+                row['timestamp'].timestamp() * 1000,  # ms timestamp
+                row['price'],
+                row['lots'],
+                0 if row['side'] == 'BID' else 1
+            ])
+        
+        logger.info(f"Serving chunk: offset={offset}, size={len(rows)}, total={total}")
+        
+        return jsonify({
+            'success': True,
+            'rows': rows,
+            'offset': offset,
+            'chunk_size': len(rows),
+            'total_rows': total,
+            'has_more': end < total
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in chunked data: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 @app.route('/api/replay/orderbook', methods=['GET'])
 def api_get_current_orderbook():
