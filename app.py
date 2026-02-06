@@ -659,13 +659,14 @@ def api_replay_get_full_data():
         }), 400
     
     # Optimization: return list of lists instead of dicts for smaller payload
-    # Format: [timestamp_ts, price, lots, side (0=bid, 1=offer)]
+    # Format: [timestamp_ts, price, freq, lot_size, side (0=bid, 1=offer)]
     rows = []
     for row in replay_engine.data_rows:
         rows.append([
             row['timestamp'].timestamp() * 1000, # ms timestamp
             row['price'],
-            row['lots'],
+            row['freq'],
+            row['lot_size'],
             0 if row['side'] == 'BID' else 1
         ])
     
@@ -710,7 +711,8 @@ def api_replay_get_chunked_data():
             rows.append([
                 row['timestamp'].timestamp() * 1000,  # ms timestamp
                 row['price'],
-                row['lots'],
+                row['freq'],
+                row['lot_size'],
                 0 if row['side'] == 'BID' else 1
             ])
         

@@ -79,9 +79,9 @@ class ReplayEngine:
                     self.data_rows.append({
                         'timestamp': timestamp,
                         'price': float(row['price']),
-                        'lots': int(row['lots']),
-                        'side': row['side'],
-                        'total_value': float(row['total_value'])
+                        'freq': int(row['lots']),  # lots column = frequency
+                        'lot_size': int(float(row['total_value']) / 100),  # total_value / 100 = lot_size
+                        'side': row['side']
                     })
             
             self.total_rows = len(self.data_rows)

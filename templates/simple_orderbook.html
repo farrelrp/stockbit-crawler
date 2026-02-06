@@ -162,8 +162,15 @@
       <button class="btn btn-danger" id="stopBtn" onclick="stopReplay()" disabled>
         ⏹ Stop
       </button>
-      <input type="number" id="speedInput" value="10" min="1" max="100" style="width: 60px; margin-left: 10px" />
-      <button class="btn btn-primary" onclick="setSpeed()">Set Speed</button>
+      <div class="speed-buttons" style="display: inline-flex; gap: 5px; margin-left: 10px;">
+        <button class="btn btn-sm btn-secondary speed-btn" data-speed="1" onclick="setSpeed(1)">1s</button>
+        <button class="btn btn-sm btn-secondary speed-btn" data-speed="5" onclick="setSpeed(5)">5s</button>
+        <button class="btn btn-sm btn-secondary speed-btn active" data-speed="10" onclick="setSpeed(10)">10s</button>
+        <button class="btn btn-sm btn-secondary speed-btn" data-speed="30" onclick="setSpeed(30)">30s</button>
+        <button class="btn btn-sm btn-secondary speed-btn" data-speed="60" onclick="setSpeed(60)">1m</button>
+        <button class="btn btn-sm btn-secondary speed-btn" data-speed="180" onclick="setSpeed(180)">3m</button>
+        <button class="btn btn-sm btn-secondary speed-btn" data-speed="300" onclick="setSpeed(300)">5m</button>
+      </div>
     </div>
   </div>
 
@@ -185,14 +192,15 @@
         <thead>
           <tr>
             <th>Price</th>
-            <th>Lots</th>
+            <th>Freq</th>
+            <th>Lot</th>
             <th>Change</th>
             <th>3m</th>
           </tr>
         </thead>
         <tbody id="bidBody">
           <tr>
-            <td colspan="4">No data yet...</td>
+            <td colspan="5">No data yet...</td>
           </tr>
         </tbody>
       </table>
@@ -206,14 +214,15 @@
         <thead>
           <tr>
             <th>Price</th>
-            <th>Lots</th>
+            <th>Freq</th>
+            <th>Lot</th>
             <th>Change</th>
             <th>3m</th>
           </tr>
         </thead>
         <tbody id="offerBody">
           <tr>
-            <td colspan="4">No data yet...</td>
+            <td colspan="5">No data yet...</td>
           </tr>
         </tbody>
       </table>
@@ -587,8 +596,7 @@
   }
 
   function startReplay() {
-    const speed = parseFloat(document.getElementById("speedInput").value) || 10;
-    playbackSpeed = speed;
+    const speed = playbackSpeed || 10;  // Use current playbackSpeed or default to 10
 
     if (isClientSide) {
       console.log(`[START] Client-side replay @ ${speed}x`);
@@ -689,15 +697,27 @@
     document.getElementById("offerBody").innerHTML = '<tr><td colspan="4" style="text-align:center; color:#888;">Stopped</td></tr>';
   }
 
-  function setSpeed() {
-    const speed = parseFloat(document.getElementById("speedInput").value);
-    playbackSpeed = speed;
+  function setSpeed(speed) {
+    if (!speed) speed = playbackSpeed; // Default to current
 
-    if (isClientSide) {
-      document.getElementById("speed").textContent = speed + "x";
-    } else {
-      setSpeedServer(speed);
-    }
+    playbackSpeed = speed;
+    document.getElementById("speed").textContent = `${speed}x`;
+
+    // Update button states
+    document.querySelectorAll('.speed-btn').forEach(btn => {
+      const btnSpeed = parseInt(btn.getAttribute('data-speed'));
+      if (btnSpeed === speed) {
+        btn.classList.add('active');
+        btn.classList.remove('btn-secondary');
+        btn.classList.add('btn-primary');
+      } else {
+        btn.classList.remove('active');
+        btn.classList.remove('btn-primary');
+        btn.classList.add('btn-secondary');
+      }
+    });
+
+    console.log(`[SPEED] Set to ${speed}x`);
   }
 
   // Scrubber event handlers with debouncing
@@ -805,59 +825,71 @@
 
   // Scans forward from 'startIdx' to find the state at 'endTimestamp'
   // Returns the difference between State@EndTime and current OrderbookState
-  // OPTIMIZED: Limits scan range to prevent performance issues with large files
   function calculateForecast2(startIdx, endTimestamp) {
     let tempParams = { bids: {}, offers: {} };
 
-    // OPTIMIZATION: Limit scan to prevent checking millions of rows
-    const MAX_SCAN_ROWS = 50000; // Maximum 50k rows to scan
+    // Scan forward (limited to prevent performance issues)
+    const MAX_SCAN_ROWS = 50000;
     const scanLimit = Math.min(startIdx + MAX_SCAN_ROWS, replayData.length);
 
-    // Scan forward
     let i = startIdx;
     while (i < scanLimit) {
       const row = replayData[i];
       if (row[0] >= endTimestamp) break; // Reached end of window
 
       const price = row[1];
-      const lots = row[2];
-      const side = row[3] === 0 ? 'bids' : 'offers';
+      const freq = row[2];
+      const lot_size = row[3];
+      const side = row[4] === 0 ? 'bids' : 'offers';
 
-      tempParams[side][price] = lots;
+      tempParams[side][price] = { freq, lot_size };
       i++;
     }
 
     const diffs = { bids: {}, offers: {} };
 
     // Merge keys to find all prices
-    const allBids = new Set([...Object.keys(orderbookState.bids), ...Object.keys(tempParams.bids)]);
-    const allOffers = new Set([...Object.keys(orderbookState.offers), ...Object.keys(tempParams.offers)]);
+    const allBids = new Set([
+      ...Object.keys(orderbookState.bids),
+      ...Object.keys(tempParams.bids)
+    ]);
+    const allOffers = new Set([
+      ...Object.keys(orderbookState.offers),
+      ...Object.keys(tempParams.offers)
+    ]);
 
     allBids.forEach(p => {
-      const endVal = tempParams.bids[p] !== undefined ? tempParams.bids[p] : (orderbookState.bids[p] || 0);
-      const startVal = orderbookState.bids[p] || 0;
-      if (endVal - startVal !== 0) diffs.bids[p] = endVal - startVal;
+      const endState = tempParams.bids[p] || { freq: 0, lot_size: 0 };
+      const startState = orderbookState.bids[p] || { freq: 0, lot_size: 0 };
+      const endVal = tempParams.bids[p] ? endState.lot_size : (orderbookState.bids[p]?.lot_size || 0);
+      const startVal = startState.lot_size || 0;
+      if (endVal - startVal !== 0) {
+        diffs.bids[p] = endVal - startVal;
+      }
     });
 
     allOffers.forEach(p => {
-      const endVal = tempParams.offers[p] !== undefined ? tempParams.offers[p] : (orderbookState.offers[p] || 0);
-      const startVal = orderbookState.offers[p] || 0;
-      if (endVal - startVal !== 0) diffs.offers[p] = endVal - startVal;
+      const endState = tempParams.offers[p] || { freq: 0, lot_size: 0 };
+      const startState = orderbookState.offers[p] || { freq: 0, lot_size: 0 };
+      const endVal = tempParams.offers[p] ? endState.lot_size : (orderbookState.offers[p]?.lot_size || 0);
+      const startVal = startState.lot_size || 0;
+      if (endVal - startVal !== 0) {
+        diffs.offers[p] = endVal - startVal;
+      }
     });
 
     return diffs;
   }
 
   function processRow(row) {
-    // row: [ts, price, lots, side]
+    // row: [ts, price, freq, lot_size, side]
     const ts = row[0];
     const price = row[1];
-    const lots = row[2];
-    const side = row[3] === 0 ? 'bids' : 'offers';
+    const freq = row[2];
+    const lot_size = row[3];
+    const side = row[4] === 0 ? 'bids' : 'offers';
 
     // 1. Check 3-Minute Boundary
-    // 3m buckets: 0-2, 3-5, 6-8...
-    // 180,000 ms
     const bucketIndex = Math.floor(ts / 180000); // 3 minutes
 
     if (bucketIndex > currentMinuteIndex) {
@@ -866,8 +898,8 @@
 
       // Update State
       minuteBaseState = {
-        bids: { ...orderbookState.bids },
-        offers: { ...orderbookState.offers }
+        bids: JSON.parse(JSON.stringify(orderbookState.bids)),
+        offers: JSON.parse(JSON.stringify(orderbookState.offers))
       };
       currentMinuteIndex = bucketIndex;
 
@@ -875,16 +907,19 @@
       forecastedChanges = calculateForecast2(currentIndex, bucketEndTime);
     }
 
-    // 2. Track Change (Instantaneous / Frame-based)
-    const oldLots = orderbookState[side][price] || 0;
-    const diff = lots - oldLots;
+    // 2. Track Change (Instantaneous / Frame-based) - based on lot_size
+    const oldState = orderbookState[side][price] || { freq: 0, lot_size: 0 };
+    const lot_diff = lot_size - oldState.lot_size;
 
-    if (diff !== 0) {
-      frameChanges[side][price] = (frameChanges[side][price] || 0) + diff;
+    if (lot_diff !== 0) {
+      frameChanges[side][price] = (frameChanges[side][price] || 0) + lot_diff;
     }
 
     // 3. Update Actual State
-    orderbookState[side][price] = lots;
+    orderbookState[side][price] = {
+      freq: freq,
+      lot_size: lot_size
+    };
   }
 
   function gameLoop(timestamp) {
@@ -929,14 +964,10 @@
     // No, renderFrame updates the DOM. The DOM persists until next update.
     // So resetting here is correct for the NEXT frame to accumulate new changes.
     frameChanges = { bids: {}, offers: {} };
-
     renderInterval = requestAnimationFrame(gameLoop);
   }
 
   function renderFrame(force = false) {
-    // throttle rendering to 30fps? or just render every frame.
-    // DOM updates are expensive.
-
     // Update basic stats
     document.getElementById("progress").textContent = `${currentIndex}/${replayData.length}`;
     if (replayData.length > 0 && currentIndex > 0) {
@@ -949,14 +980,22 @@
 
     // Sort and render top 20
     const bids = Object.entries(orderbookState.bids)
-      .map(([p, l]) => ({ price: parseFloat(p), lots: l }))
-      .filter(x => x.lots > 0)
+      .map(([p, state]) => ({
+        price: parseFloat(p),
+        freq: state.freq || 0,
+        lot_size: state.lot_size || 0
+      }))
+      .filter(x => x.lot_size > 0)
       .sort((a, b) => b.price - a.price)
       .slice(0, 20);
 
     const offers = Object.entries(orderbookState.offers)
-      .map(([p, l]) => ({ price: parseFloat(p), lots: l }))
-      .filter(x => x.lots > 0)
+      .map(([p, state]) => ({
+        price: parseFloat(p),
+        freq: state.freq || 0,
+        lot_size: state.lot_size || 0
+      }))
+      .filter(x => x.lot_size > 0)
       .sort((a, b) => a.price - b.price)
       .slice(0, 20);
 
@@ -964,16 +1003,15 @@
     const bidBody = document.getElementById("bidBody");
     bidBody.innerHTML = bids.map(row => {
       const changeFrame = frameChanges.bids[row.price] || 0;
-
-      // 3m Forecast Change (Static for window)
       const change3m = forecastedChanges.bids[row.price] || 0;
 
       return `<tr>
-              <td>${row.price.toFixed(0)}</td>
-              <td>${row.lots.toLocaleString()}</td>
-              <td>${formatChange(changeFrame)}</td> 
-              <td style="font-size:0.9em;; font-weight:bold;">${formatChange(change3m)}</td>
-        </tr>`;
+            <td>${row.price.toFixed(0)}</td>
+            <td>${row.freq.toLocaleString()}</td>
+            <td>${row.lot_size.toLocaleString()}</td>
+            <td>${formatChange(changeFrame)}</td> 
+            <td style="font-size:0.9em; font-weight:bold;">${formatChange(change3m)}</td>
+      </tr>`;
     }).join("");
 
     const offerBody = document.getElementById("offerBody");
@@ -982,11 +1020,12 @@
       const change3m = forecastedChanges.offers[row.price] || 0;
 
       return `<tr>
-              <td>${row.price.toFixed(0)}</td>
-              <td>${row.lots.toLocaleString()}</td>
-              <td>${formatChange(changeFrame)}</td> 
-              <td style="font-size:0.9em; font-weight:bold;">${formatChange(change3m)}</td>
-        </tr>`;
+            <td>${row.price.toFixed(0)}</td>
+            <td>${row.freq.toLocaleString()}</td>
+            <td>${row.lot_size.toLocaleString()}</td>
+            <td>${formatChange(changeFrame)}</td> 
+            <td style="font-size:0.9em; font-weight:bold;">${formatChange(change3m)}</td>
+      </tr>`;
     }).join("");
 
     document.getElementById("levels").textContent = bids.length + offers.length;
