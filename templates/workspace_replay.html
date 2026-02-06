@@ -1,0 +1,365 @@
+{% extends "base.html" %}
+
+{% block title %}Workspace Replay{% endblock %}
+
+{% block content %}
+<style>
+    /* Full-height workspace container */
+    #workspace-container {
+        position: fixed;
+        top: 56px;
+        /* navbar height */
+        left: 0;
+        right: 0;
+        bottom: 0;
+        display: flex;
+        flex-direction: column;
+        background: #1a1a2e;
+    }
+
+    /* Control bar */
+    #control-bar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 8px 16px;
+        background: #16213e;
+        border-bottom: 1px solid #0f3460;
+    }
+
+    #control-bar select,
+    #control-bar button {
+        padding: 6px 12px;
+        border-radius: 4px;
+        border: 1px solid #0f3460;
+        background: #1a1a2e;
+        color: #fff;
+    }
+
+    #control-bar button:hover {
+        background: #0f3460;
+    }
+
+    #control-bar .status {
+        margin-left: auto;
+        color: #888;
+        font-size: 0.85rem;
+    }
+
+    /* Perspective workspace fills remaining space */
+    perspective-workspace {
+        flex: 1;
+        --theme-name: "Pro Dark";
+    }
+
+    /* Loading overlay */
+    #loading-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.8);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+        color: #fff;
+    }
+
+    #loading-overlay.hidden {
+        display: none;
+    }
+
+    .spinner {
+        width: 50px;
+        height: 50px;
+        border: 4px solid #333;
+        border-top-color: #00d4ff;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+        to {
+            transform: rotate(360deg);
+        }
+    }
+</style>
+
+<div id="workspace-container">
+    <div id="control-bar">
+        <select id="fileSelect">
+            <option value="">-- Select CSV File --</option>
+        </select>
+        <button id="loadBtn" onclick="loadSelectedFile()">
+            <i class="bi bi-upload"></i> Load File
+        </button>
+        <button id="resetLayout" onclick="resetLayout()">
+            <i class="bi bi-layout-wtf"></i> Reset Layout
+        </button>
+        <span class="status" id="statusText">Ready</span>
+    </div>
+
+    <perspective-workspace id="workspace"></perspective-workspace>
+
+    <div id="loading-overlay" class="hidden">
+        <div class="spinner"></div>
+        <p id="loading-text">Loading data...</p>
+    </div>
+</div>
+
+<!-- Load Perspective LOCALLY as MODULES -->
+<link rel="stylesheet" href="{{ url_for('static', filename='js/perspective/themes.css') }}" />
+
+<script type="module">
+    import perspective from "{{ url_for('static', filename='js/perspective/perspective.js') }}";
+    import "{{ url_for('static', filename='js/perspective/perspective-viewer.js') }}";
+    import "{{ url_for('static', filename='js/perspective/perspective-viewer-datagrid.js') }}";
+    import "{{ url_for('static', filename='js/perspective/perspective-viewer-d3fc.js') }}";
+    import "{{ url_for('static', filename='js/perspective/perspective-workspace.js') }}";
+
+    // Expose to global
+    window.perspective = perspective;
+    window.dispatchEvent(new CustomEvent('perspective-ready'));
+</script>
+
+<script>
+    let workspace = null;
+    let currentTable = null;
+
+    // Default workspace layout configuration
+    const DEFAULT_LAYOUT = {
+        sizes: [0.5, 0.5],
+        detail: {
+            main: {
+                type: "split-area",
+                orientation: "horizontal",
+                children: [
+                    {
+                        type: "split-area",
+                        orientation: "vertical",
+                        children: [
+                            {
+                                type: "tab-area",
+                                widgets: ["depth_chart"],
+                                currentIndex: 0
+                            },
+                            {
+                                type: "tab-area",
+                                widgets: ["time_series"],
+                                currentIndex: 0
+                            }
+                        ],
+                        sizes: [0.5, 0.5]
+                    },
+                    {
+                        type: "tab-area",
+                        widgets: ["data_grid"],
+                        currentIndex: 0
+                    }
+                ],
+                sizes: [0.6, 0.4]
+            }
+        },
+        viewers: {
+            "depth_chart": {
+                table: "orderbook",
+                name: "Depth Chart",
+                plugin: "Y Bar",
+                group_by: ["price"],
+                split_by: ["side"],
+                columns: ["lot_size"],
+                sort: [["price", "desc"]],
+                aggregates: {
+                    "lot_size": "sum"
+                }
+            },
+            "time_series": {
+                table: "orderbook",
+                name: "Lot Size Over Time",
+                plugin: "Y Line",
+                group_by: ["timestamp"],
+                split_by: ["side"],
+                columns: ["lot_size"],
+                aggregates: {
+                    "lot_size": "sum"
+                }
+            },
+            "data_grid": {
+                table: "orderbook",
+                name: "Raw Data",
+                plugin: "Datagrid",
+                columns: ["timestamp", "price", "lot_size", "total_value", "side"],
+                sort: [["timestamp", "desc"]]
+            }
+        }
+    };
+
+    // Initialize when Perspective is ready
+    window.addEventListener('perspective-ready', async () => {
+        console.log("[WORKSPACE] Perspective ready, initializing...");
+
+        workspace = document.getElementById("workspace");
+
+        // Load file list
+        await loadFileList();
+
+        // Try to restore saved layout or use default
+        const savedLayout = localStorage.getItem("workspace_layout");
+        if (savedLayout) {
+            try {
+                // We'll apply layout after loading data
+                console.log("[WORKSPACE] Found saved layout");
+            } catch (e) {
+                console.warn("[WORKSPACE] Could not parse saved layout:", e);
+            }
+        }
+
+        // Save layout on changes
+        workspace.addEventListener("workspace-layout-update", async () => {
+            try {
+                const layout = await workspace.save();
+                localStorage.setItem("workspace_layout", JSON.stringify(layout));
+                console.log("[WORKSPACE] Layout saved");
+            } catch (e) {
+                console.warn("[WORKSPACE] Could not save layout:", e);
+            }
+        });
+
+        console.log("[WORKSPACE] Initialization complete");
+        document.getElementById("statusText").textContent = "Select a file to begin";
+    });
+
+    async function loadFileList() {
+        try {
+            const response = await fetch("/api/replay/files");
+            const data = await response.json();
+
+            if (data.success) {
+                const select = document.getElementById("fileSelect");
+                select.innerHTML = '<option value="">-- Select CSV File --</option>';
+
+                data.files.forEach((file) => {
+                    const option = document.createElement("option");
+                    option.value = file.path;
+                    option.textContent = `${file.ticker} (${file.date}) - ${file.size_mb}MB`;
+                    select.appendChild(option);
+                });
+            }
+        } catch (error) {
+            console.error("[WORKSPACE] Failed to load file list:", error);
+        }
+    }
+
+    window.loadSelectedFile = async function () {
+        const select = document.getElementById("fileSelect");
+        const csvPath = select.value;
+
+        if (!csvPath) {
+            alert("Please select a file first");
+            return;
+        }
+
+        showLoading("Loading CSV data...");
+
+        try {
+            // Step 1: Load file via API
+            const loadResponse = await fetch("/api/replay/load", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ csv_path: csvPath })
+            });
+            const loadData = await loadResponse.json();
+
+            if (!loadData.success) {
+                throw new Error(loadData.error || "Failed to load file");
+            }
+
+            console.log(`[WORKSPACE] Loaded ${loadData.total_rows} rows from server`);
+            updateLoading(`Loaded ${loadData.total_rows} rows, fetching data...`);
+
+            // Step 2: Fetch all data for client-side Perspective table
+            const dataResponse = await fetch("/api/replay/data");
+            const dataResult = await dataResponse.json();
+
+            if (!dataResult.success) {
+                throw new Error(dataResult.error || "Failed to fetch data");
+            }
+
+            updateLoading(`Processing ${dataResult.total_rows} rows...`);
+
+            // Step 3: Create client-side Perspective table
+            const worker = window.perspective.worker();
+
+            // Convert compact array format to objects
+            const rows = dataResult.rows.map(r => ({
+                timestamp: new Date(r[0]),
+                price: r[1],
+                lot_size: r[3],  // lot_size is at index 3
+                total_value: r[1] * r[3] * 100,  // calculate total value
+                side: r[4] === 0 ? "BID" : "OFFER"
+            }));
+
+            console.log(`[WORKSPACE] Creating table with ${rows.length} rows`);
+
+            // Create the table
+            currentTable = await worker.table(rows);
+
+            // Register table with workspace
+            workspace.tables.set("orderbook", currentTable);
+
+            // Apply layout
+            updateLoading("Applying visualization layout...");
+
+            const savedLayout = localStorage.getItem("workspace_layout");
+            if (savedLayout) {
+                try {
+                    await workspace.restore(JSON.parse(savedLayout));
+                } catch (e) {
+                    console.warn("[WORKSPACE] Could not restore saved layout, using default");
+                    await workspace.restore(DEFAULT_LAYOUT);
+                }
+            } else {
+                await workspace.restore(DEFAULT_LAYOUT);
+            }
+
+            hideLoading();
+            document.getElementById("statusText").textContent =
+                `Loaded ${dataResult.total_rows.toLocaleString()} rows`;
+
+        } catch (error) {
+            console.error("[WORKSPACE] Error loading file:", error);
+            hideLoading();
+            alert("Error: " + error.message);
+            document.getElementById("statusText").textContent = "Error loading file";
+        }
+    };
+
+    window.resetLayout = async function () {
+        if (!workspace) return;
+
+        localStorage.removeItem("workspace_layout");
+
+        if (currentTable) {
+            await workspace.restore(DEFAULT_LAYOUT);
+        }
+
+        console.log("[WORKSPACE] Layout reset to default");
+    };
+
+    function showLoading(text) {
+        document.getElementById("loading-text").textContent = text;
+        document.getElementById("loading-overlay").classList.remove("hidden");
+    }
+
+    function updateLoading(text) {
+        document.getElementById("loading-text").textContent = text;
+    }
+
+    function hideLoading() {
+        document.getElementById("loading-overlay").classList.add("hidden");
+    }
+</script>
+{% endblock %}

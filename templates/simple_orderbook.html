@@ -180,6 +180,28 @@
       <input type="range" id="timeScrubber" min="0" max="100" value="0" disabled
         style="flex: 1; height: 8px; cursor: pointer" oninput="onScrubberInput()" onchange="onScrubberChange()" />
       <span id="scrubberPosition" style="min-width: 80px; font-family: monospace">0 / 0</span>
+      <div
+        style="display: flex; align-items: center; gap: 5px; margin-left: 15px; border-left: 1px solid #ccc; padding-left: 15px;">
+        <label style="font-size: 0.9em;">Go to:</label>
+        <input type="time" id="gotoTimeInput" step="1"
+          style="padding: 4px 8px; border: 1px solid #ccc; border-radius: 4px;" />
+        <button class="btn btn-sm btn-primary" onclick="gotoTime()" style="padding: 4px 12px;">Go</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 10s Deviation Stats Panel (for whale detection) -->
+  <div id="stats10sPanel"
+    style="margin: 15px 0; padding: 12px 20px; background: white; border-radius: 8px; display: flex; gap: 25px; align-items: center; flex-wrap: wrap;">
+    <strong style="font-size: 0.9em;">10s Deviation:</strong>
+    <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+      <span><strong style="color: #28a745;">Bid Lot:</strong> <span id="stat10sBidLot">0</span></span>
+      <span><strong style="color: #dc3545;">Offer Lot:</strong> <span id="stat10sOfferLot">0</span></span>
+      <span style="border-left: 1px solid #ccc; padding-left: 15px;"><strong style="color: #28a745;">Bid Freq:</strong>
+        <span id="stat10sBidFreq">0</span></span>
+      <span><strong style="color: #dc3545;">Offer Freq:</strong> <span id="stat10sOfferFreq">0</span></span>
+      <span style="border-left: 1px solid #ccc; padding-left: 15px;"><strong>Totals:</strong> <span
+          id="stat10sTotals">-</span></span>
     </div>
   </div>
 
@@ -195,12 +217,13 @@
             <th>Freq</th>
             <th>Lot</th>
             <th>Change</th>
+            <th>30s</th>
             <th>3m</th>
           </tr>
         </thead>
         <tbody id="bidBody">
           <tr>
-            <td colspan="5">No data yet...</td>
+            <td colspan="6">No data yet...</td>
           </tr>
         </tbody>
       </table>
@@ -217,12 +240,13 @@
             <th>Freq</th>
             <th>Lot</th>
             <th>Change</th>
+            <th>30s</th>
             <th>3m</th>
           </tr>
         </thead>
         <tbody id="offerBody">
           <tr>
-            <td colspan="5">No data yet...</td>
+            <td colspan="6">No data yet...</td>
           </tr>
         </tbody>
       </table>
@@ -364,7 +388,21 @@
   let minuteBaseState = { bids: {}, offers: {} };
   let currentMinuteIndex = -1;
   let frameChanges = { bids: {}, offers: {} };
-  let lastRenderedState = { bids: {}, offers: {} }; // For calculating visual change since last frame if needed, but we use frameChanges accumulator
+  let lastRenderedState = { bids: {}, offers: {} };
+
+  // 30-second tracking
+  let state30sAgo = { bids: {}, offers: {} };
+  let last30sBoundaryIndex = -1;
+  let last30sBoundaryTime = 0;
+
+  // 10-second snapshot tracking for deviation detection
+  // Store snapshots of total lots AND freq per side
+  let lotSnapshots = []; // [{ts, bidLot, offerLot, bidFreq, offerFreq}]
+
+  // Accumulation with zero-handling: track prices seen in current timestamp batch
+  let currentBidTimestamp = 0;
+  let currentOfferTimestamp = 0;
+  let pricesSeenInBatch = { bids: new Set(), offers: new Set() };
 
   async function loadFileList() {
     try {
@@ -484,6 +522,13 @@
       minuteBaseState = { bids: {}, offers: {} };
       currentMinuteIndex = -1;
       frameChanges = { bids: {}, offers: {} };
+      state30sAgo = { bids: {}, offers: {} };
+      last30sBoundaryIndex = -1;
+      last30sBoundaryTime = 0;
+      lotSnapshots = [];
+      currentBidTimestamp = 0;
+      currentOfferTimestamp = 0;
+      pricesSeenInBatch = { bids: new Set(), offers: new Set() };
 
       // Update UI
       document.getElementById("status").textContent = "Ready (Client-Side)";
@@ -574,6 +619,13 @@
     minuteBaseState = { bids: {}, offers: {} };
     currentMinuteIndex = -1;
     frameChanges = { bids: {}, offers: {} };
+    state30sAgo = { bids: {}, offers: {} };
+    last30sBoundaryIndex = -1;
+    last30sBoundaryTime = 0;
+    lotSnapshots = [];
+    currentBidTimestamp = 0;
+    currentOfferTimestamp = 0;
+    pricesSeenInBatch = { bids: new Set(), offers: new Set() };
 
     // Update UI
     document.getElementById("status").textContent = "Ready (Client-Side)";
@@ -651,6 +703,13 @@
       minuteBaseState = { bids: {}, offers: {} };
       currentMinuteIndex = -1;
       frameChanges = { bids: {}, offers: {} };
+      state30sAgo = { bids: {}, offers: {} };
+      last30sBoundaryIndex = -1;
+      last30sBoundaryTime = 0;
+      lotSnapshots = [];
+      currentBidTimestamp = 0;
+      currentOfferTimestamp = 0;
+      pricesSeenInBatch = { bids: new Set(), offers: new Set() };
 
       renderFrame(true); // Reset view
       updateControlsStopped();
@@ -720,6 +779,57 @@
     console.log(`[SPEED] Set to ${speed}x`);
   }
 
+  // Go-To Time function: binary search for target time
+  function gotoTime() {
+    const timeInput = document.getElementById("gotoTimeInput").value;
+    if (!timeInput) {
+      alert("Please enter a time (HH:MM:SS)");
+      return;
+    }
+
+    if (replayData.length === 0) {
+      alert("Please load a file first");
+      return;
+    }
+
+    // Parse target time - get date from first row and combine with input time
+    const firstTs = new Date(replayData[0][0]);
+    const [hours, minutes, seconds] = timeInput.split(':').map(Number);
+
+    // Create target date using same date as data
+    const targetDate = new Date(firstTs);
+    targetDate.setHours(hours, minutes, seconds || 0, 0);
+    const targetMs = targetDate.getTime();
+
+    console.log(`[GOTO] Seeking to ${timeInput} (${targetMs})`);
+
+    // Binary search for closest row
+    let left = 0;
+    let right = replayData.length - 1;
+    let closest = 0;
+
+    while (left <= right) {
+      const mid = Math.floor((left + right) / 2);
+      const midTs = replayData[mid][0];
+
+      if (midTs === targetMs) {
+        closest = mid;
+        break;
+      } else if (midTs < targetMs) {
+        closest = mid;
+        left = mid + 1;
+      } else {
+        right = mid - 1;
+      }
+    }
+
+    console.log(`[GOTO] Found row ${closest} (ts: ${new Date(replayData[closest][0]).toLocaleTimeString()})`);
+
+    // Set scrubber and seek
+    document.getElementById("timeScrubber").value = closest;
+    seekToPosition();
+  }
+
   // Scrubber event handlers with debouncing
   function onScrubberInput() {
     // Only update display, don't seek yet
@@ -770,6 +880,13 @@
         orderbookState = { bids: {}, offers: {} };
         minuteBaseState = { bids: {}, offers: {} };
         currentMinuteIndex = -1;
+        state30sAgo = { bids: {}, offers: {} };
+        last30sBoundaryIndex = -1;
+        last30sBoundaryTime = 0;
+        lotSnapshots = [];
+        currentBidTimestamp = 0;
+        currentOfferTimestamp = 0;
+        pricesSeenInBatch = { bids: new Set(), offers: new Set() };
       }
 
       // Forward replay from currentIndex to position
@@ -889,7 +1006,54 @@
     const lot_size = row[3];
     const side = row[4] === 0 ? 'bids' : 'offers';
 
-    // 1. Check 3-Minute Boundary
+    // 1. Accumulation with zero-handling: When timestamp changes for this side,
+    //    set all prices NOT in the new batch to 0 (they've been removed)
+    if (side === 'bids' && ts !== currentBidTimestamp) {
+      // Save snapshot for 10s deviation BEFORE changes
+      if (currentBidTimestamp > 0) {
+        const bidLot = Object.values(orderbookState.bids).reduce((sum, s) => sum + (s.lot_size || 0), 0);
+        const offerLot = Object.values(orderbookState.offers).reduce((sum, s) => sum + (s.lot_size || 0), 0);
+        const bidFreq = Object.values(orderbookState.bids).reduce((sum, s) => sum + (s.freq || 0), 0);
+        const offerFreq = Object.values(orderbookState.offers).reduce((sum, s) => sum + (s.freq || 0), 0);
+        lotSnapshots.push({ ts: currentBidTimestamp, bidLot, offerLot, bidFreq, offerFreq });
+      }
+
+      // Zero out prices not seen in the previous batch (they've been removed)
+      if (pricesSeenInBatch.bids.size > 0) {
+        for (const p of Object.keys(orderbookState.bids)) {
+          if (!pricesSeenInBatch.bids.has(p)) {
+            // Price was removed - record change and delete
+            const oldLot = orderbookState.bids[p].lot_size || 0;
+            if (oldLot > 0) {
+              frameChanges.bids[p] = (frameChanges.bids[p] || 0) - oldLot;
+            }
+            delete orderbookState.bids[p];
+          }
+        }
+      }
+      pricesSeenInBatch.bids = new Set();
+      currentBidTimestamp = ts;
+    } else if (side === 'offers' && ts !== currentOfferTimestamp) {
+      // Zero out prices not seen in the previous batch
+      if (pricesSeenInBatch.offers.size > 0) {
+        for (const p of Object.keys(orderbookState.offers)) {
+          if (!pricesSeenInBatch.offers.has(p)) {
+            const oldLot = orderbookState.offers[p].lot_size || 0;
+            if (oldLot > 0) {
+              frameChanges.offers[p] = (frameChanges.offers[p] || 0) - oldLot;
+            }
+            delete orderbookState.offers[p];
+          }
+        }
+      }
+      pricesSeenInBatch.offers = new Set();
+      currentOfferTimestamp = ts;
+    }
+
+    // Mark this price as seen in current batch
+    pricesSeenInBatch[side].add(String(price));
+
+    // 2. Check 3-Minute Boundary (for 3m forecast)
     const bucketIndex = Math.floor(ts / 180000); // 3 minutes
 
     if (bucketIndex > currentMinuteIndex) {
@@ -907,7 +1071,20 @@
       forecastedChanges = calculateForecast2(currentIndex, bucketEndTime);
     }
 
-    // 2. Track Change (Instantaneous / Frame-based) - based on lot_size
+    // 3. Check 30-Second Boundary (for 30s change column)
+    const bucket30sIndex = Math.floor(ts / 30000); // 30 seconds
+
+    if (bucket30sIndex > last30sBoundaryIndex) {
+      // New 30s bucket - save current state as "30s ago" reference
+      state30sAgo = {
+        bids: JSON.parse(JSON.stringify(orderbookState.bids)),
+        offers: JSON.parse(JSON.stringify(orderbookState.offers))
+      };
+      last30sBoundaryIndex = bucket30sIndex;
+      last30sBoundaryTime = ts;
+    }
+
+    // 4. Track Change (Instantaneous / Frame-based) - based on lot_size
     const oldState = orderbookState[side][price] || { freq: 0, lot_size: 0 };
     const lot_diff = lot_size - oldState.lot_size;
 
@@ -915,7 +1092,7 @@
       frameChanges[side][price] = (frameChanges[side][price] || 0) + lot_diff;
     }
 
-    // 3. Update Actual State
+    // 5. Update Actual State
     orderbookState[side][price] = {
       freq: freq,
       lot_size: lot_size
@@ -970,16 +1147,70 @@
   function renderFrame(force = false) {
     // Update basic stats
     document.getElementById("progress").textContent = `${currentIndex}/${replayData.length}`;
+    let currentTs = 0;
     if (replayData.length > 0 && currentIndex > 0) {
-      const ts = new Date(replayData[currentIndex - 1][0]);
+      currentTs = replayData[currentIndex - 1][0];
+      const ts = new Date(currentTs);
       document.getElementById("currentTime").textContent = ts.toLocaleTimeString("en-US", { hour12: false });
     }
 
     // Update Scrubber (visually only)
     document.getElementById("timeScrubber").value = currentIndex;
 
-    // Sort and render top 20
-    const bids = Object.entries(orderbookState.bids)
+    // Purge old snapshots (older than 10s)
+    const cutoffTime = currentTs - 10000;
+    lotSnapshots = lotSnapshots.filter(s => s.ts >= cutoffTime);
+
+    // Calculate current totals (lot and freq)
+    const currentBidLot = Object.values(orderbookState.bids).reduce((sum, s) => sum + (s.lot_size || 0), 0);
+    const currentOfferLot = Object.values(orderbookState.offers).reduce((sum, s) => sum + (s.lot_size || 0), 0);
+    const currentBidFreq = Object.values(orderbookState.bids).reduce((sum, s) => sum + (s.freq || 0), 0);
+    const currentOfferFreq = Object.values(orderbookState.offers).reduce((sum, s) => sum + (s.freq || 0), 0);
+
+    // Calculate 10s average from snapshots (only last 10 seconds)
+    let avgBidLot = 0, avgOfferLot = 0, avgBidFreq = 0, avgOfferFreq = 0;
+    if (lotSnapshots.length > 0) {
+      avgBidLot = lotSnapshots.reduce((sum, s) => sum + (s.bidLot || 0), 0) / lotSnapshots.length;
+      avgOfferLot = lotSnapshots.reduce((sum, s) => sum + (s.offerLot || 0), 0) / lotSnapshots.length;
+      avgBidFreq = lotSnapshots.reduce((sum, s) => sum + (s.bidFreq || 0), 0) / lotSnapshots.length;
+      avgOfferFreq = lotSnapshots.reduce((sum, s) => sum + (s.offerFreq || 0), 0) / lotSnapshots.length;
+    }
+
+    // Calculate deviation from 10s average
+    const bidLotDev = currentBidLot - avgBidLot;
+    const offerLotDev = currentOfferLot - avgOfferLot;
+    const bidFreqDev = currentBidFreq - avgBidFreq;
+    const offerFreqDev = currentOfferFreq - avgOfferFreq;
+
+    // Update 10s stats display elements
+    const bidLotEl = document.getElementById("stat10sBidLot");
+    const offerLotEl = document.getElementById("stat10sOfferLot");
+    const bidFreqEl = document.getElementById("stat10sBidFreq");
+    const offerFreqEl = document.getElementById("stat10sOfferFreq");
+    const totalsEl = document.getElementById("stat10sTotals");
+
+    // Bid lot deviation - positive means more lots than 10s average (accumulation)
+    bidLotEl.textContent = bidLotDev >= 0 ? `+${Math.round(bidLotDev).toLocaleString()}` : Math.round(bidLotDev).toLocaleString();
+    bidLotEl.style.color = bidLotDev > 0 ? '#28a745' : (bidLotDev < 0 ? '#dc3545' : '#666');
+
+    // Offer lot deviation - positive means more lots than average (selling pressure)
+    offerLotEl.textContent = offerLotDev >= 0 ? `+${Math.round(offerLotDev).toLocaleString()}` : Math.round(offerLotDev).toLocaleString();
+    offerLotEl.style.color = offerLotDev > 0 ? '#dc3545' : (offerLotDev < 0 ? '#28a745' : '#666');
+
+    // Bid freq deviation
+    bidFreqEl.textContent = bidFreqDev >= 0 ? `+${Math.round(bidFreqDev).toLocaleString()}` : Math.round(bidFreqDev).toLocaleString();
+    bidFreqEl.style.color = bidFreqDev > 0 ? '#28a745' : (bidFreqDev < 0 ? '#dc3545' : '#666');
+
+    // Offer freq deviation
+    offerFreqEl.textContent = offerFreqDev >= 0 ? `+${Math.round(offerFreqDev).toLocaleString()}` : Math.round(offerFreqDev).toLocaleString();
+    offerFreqEl.style.color = offerFreqDev > 0 ? '#dc3545' : (offerFreqDev < 0 ? '#28a745' : '#666');
+
+    // Show current totals for reference
+    totalsEl.innerHTML = `L: <b>${currentBidLot.toLocaleString()}</b>/<b>${currentOfferLot.toLocaleString()}</b> | F: <b>${currentBidFreq.toLocaleString()}</b>/<b>${currentOfferFreq.toLocaleString()}</b>`;
+    totalsEl.style.color = '#666';
+
+    // Sort and render top 20 (no stale price detection - prices are now overwritten per timestamp)
+    let bids = Object.entries(orderbookState.bids)
       .map(([p, state]) => ({
         price: parseFloat(p),
         freq: state.freq || 0,
@@ -989,7 +1220,7 @@
       .sort((a, b) => b.price - a.price)
       .slice(0, 20);
 
-    const offers = Object.entries(orderbookState.offers)
+    let offers = Object.entries(orderbookState.offers)
       .map(([p, state]) => ({
         price: parseFloat(p),
         freq: state.freq || 0,
@@ -1003,13 +1234,16 @@
     const bidBody = document.getElementById("bidBody");
     bidBody.innerHTML = bids.map(row => {
       const changeFrame = frameChanges.bids[row.price] || 0;
+      const state30s = state30sAgo.bids[row.price] || { lot_size: 0 };
+      const change30s = row.lot_size - (state30s.lot_size || 0);
       const change3m = forecastedChanges.bids[row.price] || 0;
 
       return `<tr>
             <td>${row.price.toFixed(0)}</td>
             <td>${row.freq.toLocaleString()}</td>
             <td>${row.lot_size.toLocaleString()}</td>
-            <td>${formatChange(changeFrame)}</td> 
+            <td>${formatChange(changeFrame)}</td>
+            <td style="font-size:0.85em;">${formatChange(change30s)}</td>
             <td style="font-size:0.9em; font-weight:bold;">${formatChange(change3m)}</td>
       </tr>`;
     }).join("");
@@ -1017,13 +1251,16 @@
     const offerBody = document.getElementById("offerBody");
     offerBody.innerHTML = offers.map(row => {
       const changeFrame = frameChanges.offers[row.price] || 0;
+      const state30s = state30sAgo.offers[row.price] || { lot_size: 0 };
+      const change30s = row.lot_size - (state30s.lot_size || 0);
       const change3m = forecastedChanges.offers[row.price] || 0;
 
       return `<tr>
             <td>${row.price.toFixed(0)}</td>
             <td>${row.freq.toLocaleString()}</td>
             <td>${row.lot_size.toLocaleString()}</td>
-            <td>${formatChange(changeFrame)}</td> 
+            <td>${formatChange(changeFrame)}</td>
+            <td style="font-size:0.85em;">${formatChange(change30s)}</td>
             <td style="font-size:0.9em; font-weight:bold;">${formatChange(change3m)}</td>
       </tr>`;
     }).join("");

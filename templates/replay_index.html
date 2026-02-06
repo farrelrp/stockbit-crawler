@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Market Replay{% endblock %}
+{% block content %}
+<div class="row justify-content-center mt-5">
+    <div class="col-md-10 text-center">
+        <h1 class="mb-5"><i class="bi bi-play-circle-fill"></i> Market Replay</h1>
+
+        <div class="row">
+            <div class="col-md-4 mb-4">
+                <div class="card h-100 shadow-sm hover-card">
+                    <div class="card-body p-4">
+                        <div class="display-4 text-primary mb-3">
+                            <i class="bi bi-list-ol"></i>
+                        </div>
+                        <h3 class="card-title">Simple Orderbook</h3>
+                        <p class="card-text text-muted mb-4">
+                            Classic ladder view with real-time updates. Best for quick analysis.
+                        </p>
+                        <a href="/replay/orderbook" class="btn btn-lg btn-primary w-100">
+                            Open Simple View
+                        </a>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-4 mb-4">
+                <div class="card h-100 shadow-sm hover-card">
+                    <div class="card-body p-4">
+                        <div class="display-4 text-success mb-3">
+                            <i class="bi bi-graph-up"></i>
+                        </div>
+                        <h3 class="card-title">Perspective View</h3>
+                        <p class="card-text text-muted mb-4">
+                            Single-panel Perspective viewer with live streaming replay.
+                        </p>
+                        <a href="/replay/perspective" class="btn btn-lg btn-success w-100">
+                            Open Perspective
+                        </a>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-4 mb-4">
+                <div class="card h-100 shadow-sm hover-card border-warning">
+                    <div class="card-body p-4">
+                        <div class="display-4 text-warning mb-3">
+                            <i class="bi bi-layout-wtf"></i>
+                        </div>
+                        <h3 class="card-title">Workspace Dashboard</h3>
+                        <p class="card-text text-muted mb-4">
+                            Multi-panel analysis: Depth Chart, Time Series, and Data Grid.
+                        </p>
+                        <a href="/replay/workspace" class="btn btn-lg btn-warning w-100">
+                            Open Workspace
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .hover-card {
+        transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .hover-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1) !important;
+    }
+</style>
+{% endblock %}

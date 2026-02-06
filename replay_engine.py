@@ -109,17 +109,17 @@ class ReplayEngine:
                 'error': str(e)
             }
     
-    def _calculate_change(self, price: float, side: str, new_lots: int) -> int:
+    def _calculate_change(self, price: float, side: str, lot_size: int) -> int:
         """
-        Calculate change in lots from previous state
-        Returns: change (positive or negative)
+        Calculate change in lot_size from previous state
         """
         key = (price, side)
+        
         old_lots = self.state.get(key, 0)
-        change = new_lots - old_lots
+        change = lot_size - old_lots
         
         # Update state
-        self.state[key] = new_lots
+        self.state[key] = lot_size
         
         return change
     
@@ -169,18 +169,20 @@ class ReplayEngine:
                 else:
                     self.last_offer_timestamp = current_row['timestamp']
                 
-                # Calculate change
+                # Calculate change (Change logic: based on lot_size difference)
                 change = self._calculate_change(
                     current_row['price'],
                     current_row['side'],
-                    current_row['lots']
+                    current_row['lot_size']
                 )
                 
                 # Prepare update for Perspective
                 update_data = {
+                    'timestamp': current_row['timestamp'], # Add timestamp
                     'price': current_row['price'],
                     'side': current_row['side'],
-                    'lots': current_row['lots'],
+                    'freq': current_row['freq'],       # Add freq
+                    'lot_size': current_row['lot_size'], # Add lot_size
                     'change': change
                 }
                 

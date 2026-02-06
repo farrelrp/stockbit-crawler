@@ -32,9 +32,11 @@ class PerspectiveServer:
         # Use index to ensure updates overwrite rather than append
         # This creates a "ladder" effect where each price level is unique
         df = pd.DataFrame({
+            "timestamp": pd.Series([], dtype=object), # datetime as object/string
             "price": pd.Series([], dtype=float),
             "side": pd.Series([], dtype=str),
-            "lots": pd.Series([], dtype='Int64'),  # nullable integer
+            "freq": pd.Series([], dtype='Int64'),
+            "lot_size": pd.Series([], dtype='Int64'),
             "change": pd.Series([], dtype='Int64')
         })
         

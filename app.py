@@ -134,9 +134,9 @@ def orderbook_page():
     """Orderbook streaming page"""
     return render_template('orderbook.html')
 
-@app.route('/replay')
-def replay_page():
-    """Market Replay visualization page"""
+@app.route('/replay/perspective')
+def replay_perspective():
+    """Advanced Perspective replay view"""
     return render_template('market_replay.html')
 
 @app.route('/replay/debug')
@@ -149,10 +149,20 @@ def replay_test_page():
     """Test Perspective CDN loading"""
     return render_template('test_perspective.html')
 
-@app.route('/replay/simple')
-def replay_simple_page():
-    """Simple orderbook view without Perspective (emergency fallback)"""
+@app.route('/replay/orderbook')
+def replay_orderbook():
+    """Simple orderbook replay view (client-side)"""
     return render_template('simple_orderbook.html')
+
+@app.route('/replay/workspace')
+def replay_workspace():
+    """Multi-panel workspace dashboard for orderbook analysis"""
+    return render_template('workspace_replay.html')
+
+@app.route('/replay')
+def replay_index():
+    """Landing page for replay views"""
+    return render_template('replay_index.html')
 
 # ===== API ENDPOINTS =====
 
