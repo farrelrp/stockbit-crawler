@@ -1168,7 +1168,9 @@
     const currentOfferFreq = Object.values(orderbookState.offers).reduce((sum, s) => sum + (s.freq || 0), 0);
 
     // Calculate 10s average from snapshots (only last 10 seconds)
-    let avgBidLot = 0, avgOfferLot = 0, avgBidFreq = 0, avgOfferFreq = 0;
+    // For slow stocks with large gaps between timestamps, use current values as baseline
+    let avgBidLot = currentBidLot, avgOfferLot = currentOfferLot;
+    let avgBidFreq = currentBidFreq, avgOfferFreq = currentOfferFreq;
     if (lotSnapshots.length > 0) {
       avgBidLot = lotSnapshots.reduce((sum, s) => sum + (s.bidLot || 0), 0) / lotSnapshots.length;
       avgOfferLot = lotSnapshots.reduce((sum, s) => sum + (s.offerLot || 0), 0) / lotSnapshots.length;
