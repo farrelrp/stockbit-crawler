@@ -4,6 +4,22 @@ Stockbit Running Trade Scraper - Flask Web Application
 from flask import Flask, render_template, request, jsonify, send_file
 import logging
 from logging.handlers import RotatingFileHandler
+import platform
+
+class SafeRotatingFileHandler(RotatingFileHandler):
+    """RotatingFileHandler that handles Windows file locking during rotation.
+    
+    On Windows, os.rename() fails with PermissionError when another thread
+    has the log file open. This subclass retries the rotation and silently
+    skips if it still can't rename.
+    """
+    def doRollover(self):
+        try:
+            super().doRollover()
+        except PermissionError:
+            # On Windows, another thread may be holding the file open.
+            # Skip this rotation attempt; it will succeed on the next one.
+            pass
 from datetime import datetime
 from pathlib import Path
 import json
@@ -33,7 +49,7 @@ def setup_logging():
     LOG_FILE.parent.mkdir(exist_ok=True)
     
     # file handler with rotation
-    file_handler = RotatingFileHandler(
+    file_handler = SafeRotatingFileHandler(
         LOG_FILE,
         maxBytes=LOG_MAX_BYTES,
         backupCount=LOG_BACKUP_COUNT

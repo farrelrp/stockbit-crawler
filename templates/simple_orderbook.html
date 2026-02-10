@@ -1,6 +1,7 @@
 {% extends "base.html" %} {% block title %}Simple Orderbook View{% endblock %}
 {% block content %}
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" />
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
 <style>
   .orderbook-container {
@@ -253,6 +254,38 @@
     </div>
   </div>
 
+  <!-- Volume Histogram Section -->
+  <div id="histogramSection"
+    style="margin-top: 20px; background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+    <h3 style="margin: 0 0 15px 0; display: flex; align-items: center; gap: 10px;">
+      <i class="bi bi-bar-chart-fill"></i> Volume Histogram
+      <span style="font-size: 0.7em; color: #888; font-weight: normal;">(Bids ↑ / Offers ↓)</span>
+    </h3>
+    <div id="histogramChart" style="width: 100%; height: 350px;"></div>
+    <div style="display: flex; gap: 10px; margin-top: 10px; align-items: center;">
+      <span style="font-size: 0.85em; color: #666;">Time Range:</span>
+      <button class="btn btn-small btn-secondary histogram-range" data-range="60000"
+        onclick="setHistogramRange(60000)">1m</button>
+      <button class="btn btn-small btn-secondary histogram-range" data-range="300000"
+        onclick="setHistogramRange(300000)">5m</button>
+      <button class="btn btn-small btn-secondary histogram-range" data-range="900000"
+        onclick="setHistogramRange(900000)">15m</button>
+      <button class="btn btn-small btn-primary histogram-range active" data-range="0"
+        onclick="setHistogramRange(0)">All</button>
+      <span style="margin-left: auto; font-size: 0.85em; color: #888;" id="histogramDataPoints">0 data points</span>
+    </div>
+  </div>
+
+  <!-- Frequency Histogram Section -->
+  <div id="freqHistogramSection"
+    style="margin-top: 20px; background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+    <h3 style="margin: 0 0 15px 0; display: flex; align-items: center; gap: 10px;">
+      <i class="bi bi-bar-chart-fill"></i> Frequency Histogram
+      <span style="font-size: 0.7em; color: #888; font-weight: normal;">(Bids ↑ / Offers ↓)</span>
+    </h3>
+    <div id="freqHistogramChart" style="width: 100%; height: 350px;"></div>
+  </div>
+
   <!-- Confirmation Modal -->
   <div id="confirmModal"
     style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 10000; justify-content: center; align-items: center;">
@@ -404,6 +437,253 @@
   let currentOfferTimestamp = 0;
   let pricesSeenInBatch = { bids: new Set(), offers: new Set() };
 
+  // Forecasted changes for 3m prediction column
+  let forecastedChanges = { bids: {}, offers: {} };
+
+  // Histogram data for Plotly
+  let histogramData = []; // [{ts: timestamp, bidTotal: number, offerTotal: number}]
+  let histogramRange = 0; // 0 = all data, otherwise ms range
+  let histogramInitialized = false;
+
+  // Shared chart config
+  const chartConfig = {
+    responsive: true,
+    displayModeBar: true,
+    modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d'],
+    scrollZoom: true,
+    displaylogo: false
+  };
+
+  // Initialize Plotly volume histogram
+  function initHistogram() {
+    const layout = {
+      margin: { t: 10, r: 20, b: 40, l: 60 },
+      xaxis: {
+        type: 'date',
+        rangeslider: { visible: true, thickness: 0.1 },
+        title: { text: '', standoff: 5 }
+      },
+      yaxis: {
+        title: { text: 'Volume (Lots)', standoff: 10 },
+        zeroline: true,
+        zerolinewidth: 2,
+        zerolinecolor: '#333'
+      },
+      barmode: 'relative',
+      bargap: 0.1,
+      hovermode: 'x unified',
+      showlegend: true,
+      legend: { orientation: 'h', y: 1.02, x: 0.5, xanchor: 'center' },
+      dragmode: 'pan'
+    };
+
+    const traces = [
+      {
+        x: [], y: [], type: 'bar', name: 'Bids',
+        marker: { color: 'rgba(40, 167, 69, 0.8)' },
+        hovertemplate: 'Bid: %{y:,.0f} lots<extra></extra>'
+      },
+      {
+        x: [], y: [], type: 'bar', name: 'Offers',
+        marker: { color: 'rgba(220, 53, 69, 0.8)' },
+        customdata: [],
+        hovertemplate: 'Offer: %{customdata:,.0f} lots<extra></extra>'
+      }
+    ];
+
+    Plotly.newPlot('histogramChart', traces, layout, chartConfig);
+    histogramInitialized = true;
+  }
+
+  // Initialize Plotly frequency histogram
+  function initFreqHistogram() {
+    const layout = {
+      margin: { t: 10, r: 20, b: 40, l: 60 },
+      xaxis: {
+        type: 'date',
+        rangeslider: { visible: true, thickness: 0.1 },
+        title: { text: '', standoff: 5 }
+      },
+      yaxis: {
+        title: { text: 'Frequency', standoff: 10 },
+        zeroline: true,
+        zerolinewidth: 2,
+        zerolinecolor: '#333'
+      },
+      barmode: 'relative',
+      bargap: 0.1,
+      hovermode: 'x unified',
+      showlegend: true,
+      legend: { orientation: 'h', y: 1.02, x: 0.5, xanchor: 'center' },
+      dragmode: 'pan'
+    };
+
+    const traces = [
+      {
+        x: [], y: [], type: 'bar', name: 'Bids',
+        marker: { color: 'rgba(40, 167, 69, 0.8)' },
+        hovertemplate: 'Bid: %{y:,.0f}<extra></extra>'
+      },
+      {
+        x: [], y: [], type: 'bar', name: 'Offers',
+        marker: { color: 'rgba(220, 53, 69, 0.8)' },
+        customdata: [],
+        hovertemplate: 'Offer: %{customdata:,.0f}<extra></extra>'
+      }
+    ];
+
+    Plotly.newPlot('freqHistogramChart', traces, layout, chartConfig);
+  }
+
+  // Pre-compute all histogram data from loaded replay data
+  // Simulates the full orderbook offline and samples every 500ms
+  function precomputeHistogram() {
+    if (!histogramInitialized || replayData.length === 0) return;
+
+    console.log('[HISTOGRAM] Pre-computing from', replayData.length, 'rows...');
+    const startTime = performance.now();
+
+    histogramData = [];
+    const tempState = { bids: {}, offers: {} };
+    let lastSampleTs = 0;
+    let tempBidTimestamp = 0;
+    let tempOfferTimestamp = 0;
+    let tempPricesSeen = { bids: new Set(), offers: new Set() };
+
+    for (let i = 0; i < replayData.length; i++) {
+      const row = replayData[i];
+      const ts = row[0];
+      const price = row[1];
+      const freq = row[2];
+      const lot_size = row[3];
+      const side = row[4] === 0 ? 'bids' : 'offers';
+
+      // Zero-handling: when timestamp changes for a side, remove unseen prices
+      if (side === 'bids' && ts !== tempBidTimestamp) {
+        if (tempPricesSeen.bids.size > 0) {
+          for (const p of Object.keys(tempState.bids)) {
+            if (!tempPricesSeen.bids.has(p)) delete tempState.bids[p];
+          }
+        }
+        tempPricesSeen.bids = new Set();
+        tempBidTimestamp = ts;
+      } else if (side === 'offers' && ts !== tempOfferTimestamp) {
+        if (tempPricesSeen.offers.size > 0) {
+          for (const p of Object.keys(tempState.offers)) {
+            if (!tempPricesSeen.offers.has(p)) delete tempState.offers[p];
+          }
+        }
+        tempPricesSeen.offers = new Set();
+        tempOfferTimestamp = ts;
+      }
+
+      tempPricesSeen[side].add(String(price));
+      tempState[side][price] = { freq, lot_size };
+
+      // Sample every 500ms of virtual time
+      if (ts - lastSampleTs >= 500) {
+        const bidTotal = Object.values(tempState.bids).reduce((sum, s) => sum + (s.lot_size || 0), 0);
+        const offerTotal = Object.values(tempState.offers).reduce((sum, s) => sum + (s.lot_size || 0), 0);
+        const bidFreq = Object.values(tempState.bids).reduce((sum, s) => sum + (s.freq || 0), 0);
+        const offerFreq = Object.values(tempState.offers).reduce((sum, s) => sum + (s.freq || 0), 0);
+        histogramData.push({ ts, bidTotal, offerTotal, bidFreq, offerFreq });
+        lastSampleTs = ts;
+      }
+    }
+
+    console.log(`[HISTOGRAM] Pre-computed ${histogramData.length} data points in ${(performance.now() - startTime).toFixed(0)}ms`);
+
+    // Lock x-axis to the day's data range
+    if (histogramData.length > 0) {
+      const firstTs = new Date(histogramData[0].ts);
+      const lastTs = new Date(histogramData[histogramData.length - 1].ts);
+
+      Plotly.relayout('histogramChart', {
+        'xaxis.range': [firstTs, lastTs],
+        'xaxis.autorange': false
+      });
+      Plotly.relayout('freqHistogramChart', {
+        'xaxis.range': [firstTs, lastTs],
+        'xaxis.autorange': false
+      });
+    }
+
+    updateHistogram();
+    updateFreqHistogram();
+  }
+
+  // Update histogram with current data
+  function updateHistogram() {
+    if (!histogramInitialized || histogramData.length === 0) return;
+
+    let dataToPlot = histogramData;
+
+    // Apply range filter if set
+    if (histogramRange > 0 && histogramData.length > 0) {
+      const lastTs = histogramData[histogramData.length - 1].ts;
+      const cutoffTs = lastTs - histogramRange;
+      dataToPlot = histogramData.filter(d => d.ts >= cutoffTs);
+    }
+
+    const times = dataToPlot.map(d => new Date(d.ts));
+    const bidTotals = dataToPlot.map(d => d.bidTotal);
+    const offerTotals = dataToPlot.map(d => -d.offerTotal); // Negative for downward bars
+    const offerCustomdata = dataToPlot.map(d => d.offerTotal); // Positive for hover display
+
+    Plotly.update('histogramChart', {
+      x: [times, times],
+      y: [bidTotals, offerTotals],
+      customdata: [[], offerCustomdata]
+    }, {}, [0, 1]);
+
+    document.getElementById('histogramDataPoints').textContent = `${dataToPlot.length.toLocaleString()} data points`;
+  }
+
+  // Update frequency histogram with current data
+  function updateFreqHistogram() {
+    if (!histogramInitialized || histogramData.length === 0) return;
+
+    let dataToPlot = histogramData;
+
+    // Apply same range filter
+    if (histogramRange > 0 && histogramData.length > 0) {
+      const lastTs = histogramData[histogramData.length - 1].ts;
+      const cutoffTs = lastTs - histogramRange;
+      dataToPlot = histogramData.filter(d => d.ts >= cutoffTs);
+    }
+
+    const times = dataToPlot.map(d => new Date(d.ts));
+    const bidFreqs = dataToPlot.map(d => d.bidFreq);
+    const offerFreqs = dataToPlot.map(d => -d.offerFreq);
+    const offerCustomdata = dataToPlot.map(d => d.offerFreq);
+
+    Plotly.update('freqHistogramChart', {
+      x: [times, times],
+      y: [bidFreqs, offerFreqs],
+      customdata: [[], offerCustomdata]
+    }, {}, [0, 1]);
+  }
+
+  // Set histogram time range (applies to both charts)
+  function setHistogramRange(rangeMs) {
+    histogramRange = rangeMs;
+
+    // Update button states
+    document.querySelectorAll('.histogram-range').forEach(btn => {
+      const btnRange = parseInt(btn.getAttribute('data-range'));
+      if (btnRange === rangeMs) {
+        btn.classList.remove('btn-secondary');
+        btn.classList.add('btn-primary', 'active');
+      } else {
+        btn.classList.remove('btn-primary', 'active');
+        btn.classList.add('btn-secondary');
+      }
+    });
+
+    updateHistogram();
+    updateFreqHistogram();
+  }
+
   async function loadFileList() {
     try {
       const response = await fetch("/api/replay/files");
@@ -519,6 +799,7 @@
 
       // Reset state
       orderbookState = { bids: {}, offers: {} };
+      forecastedChanges = { bids: {}, offers: {} };
       minuteBaseState = { bids: {}, offers: {} };
       currentMinuteIndex = -1;
       frameChanges = { bids: {}, offers: {} };
@@ -529,6 +810,10 @@
       currentBidTimestamp = 0;
       currentOfferTimestamp = 0;
       pricesSeenInBatch = { bids: new Set(), offers: new Set() };
+
+      // Reset histogram data for new file
+      // Pre-compute histogram from full dataset
+      precomputeHistogram();
 
       // Update UI
       document.getElementById("status").textContent = "Ready (Client-Side)";
@@ -627,7 +912,10 @@
     currentOfferTimestamp = 0;
     pricesSeenInBatch = { bids: new Set(), offers: new Set() };
 
-    // Update UI
+    forecastedChanges = { bids: {}, offers: {} };
+
+    // Pre-compute histogram from full dataset
+    precomputeHistogram();
     document.getElementById("status").textContent = "Ready (Client-Side)";
     document.getElementById("progress").textContent = `0/${replayData.length}`;
     document.getElementById("currentTime").textContent = "--:--:--";
@@ -700,6 +988,7 @@
 
       currentIndex = 0;
       orderbookState = { bids: {}, offers: {} };
+      forecastedChanges = { bids: {}, offers: {} };
       minuteBaseState = { bids: {}, offers: {} };
       currentMinuteIndex = -1;
       frameChanges = { bids: {}, offers: {} };
@@ -710,6 +999,8 @@
       currentBidTimestamp = 0;
       currentOfferTimestamp = 0;
       pricesSeenInBatch = { bids: new Set(), offers: new Set() };
+
+      // Note: histogram data is pre-computed on file load, no reset needed
 
       renderFrame(true); // Reset view
       updateControlsStopped();
@@ -878,6 +1169,7 @@
       if (position < currentIndex) {
         currentIndex = 0;
         orderbookState = { bids: {}, offers: {} };
+        forecastedChanges = { bids: {}, offers: {} };
         minuteBaseState = { bids: {}, offers: {} };
         currentMinuteIndex = -1;
         state30sAgo = { bids: {}, offers: {} };
@@ -887,6 +1179,7 @@
         currentBidTimestamp = 0;
         currentOfferTimestamp = 0;
         pricesSeenInBatch = { bids: new Set(), offers: new Set() };
+        // Histogram data is pre-computed, no reset needed on seek
       }
 
       // Forward replay from currentIndex to position
@@ -1161,6 +1454,8 @@
     const cutoffTime = currentTs - 10000;
     lotSnapshots = lotSnapshots.filter(s => s.ts >= cutoffTime);
 
+    // Histogram data is pre-computed on file load, no streaming collection needed
+
     // Calculate current totals (lot and freq)
     const currentBidLot = Object.values(orderbookState.bids).reduce((sum, s) => sum + (s.lot_size || 0), 0);
     const currentOfferLot = Object.values(orderbookState.offers).reduce((sum, s) => sum + (s.lot_size || 0), 0);
@@ -1268,6 +1563,8 @@
     }).join("");
 
     document.getElementById("levels").textContent = bids.length + offers.length;
+
+    // Histogram is pre-computed on file load, no per-frame update needed
   }
 
   // --- Legacy Server Calls (Renamed) ---
@@ -1405,6 +1702,10 @@
 
   // Initial load
   loadFileList();
+
+  // Initialize histogram
+  initHistogram();
+  initFreqHistogram();
 
   console.log("[INIT] Simple orderbook view initialized");
 </script>
