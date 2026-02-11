@@ -25,10 +25,39 @@
                 </div>
                 
                 <div class="mb-3">
-                    <label for="tickers" class="form-label">Tickers</label>
-                    <textarea class="form-control" id="tickers" rows="4" 
-                              placeholder="Enter tickers (one per line)&#10;BBCA&#10;TLKM&#10;BBRI"></textarea>
-                    <small class="form-text text-muted">Enter stock symbols, one per line</small>
+                    <label for="ticker-input" class="form-label">Tickers</label>
+                    <!-- Hidden input to store actual value for form submission -->
+                    <textarea id="tickers" style="display: none;"></textarea>
+                    
+                    <!-- Chip Container -->
+                    <div class="chip-container" onclick="document.getElementById('ticker-input').focus()">
+                        <input type="text" class="chip-input" id="ticker-input" placeholder="Type ticker & press Enter (e.g. BBCA) ..." autocomplete="off">
+                    </div>
+                    <div class="d-flex justify-content-between align-items-center mt-1">
+                        <small class="form-text text-muted">Type a ticker and press Enter or Comma. Backspace to delete.</small>
+                        <button type="button" class="btn btn-sm btn-outline-primary" onclick="saveCurrentAsIndex()">
+                            <i class="bi bi-bookmark-plus"></i> Save as Watchlist
+                        </button>
+                    </div>
+                    
+                    <!-- History / Quick Add -->
+                    <div class="history-section" id="history-section" style="display: none;">
+                        
+                        <!-- Recent Runs (Auto-Saved) -->
+                        <div id="recent-runs-container" class="mb-2" style="display: none;">
+                            <small class="text-muted"><strong><i class="bi bi-clock"></i> Recent Runs:</strong></small>
+                            <div id="recent-runs-chips" class="mt-1"></div>
+                            <hr class="my-2" style="opacity: 0.1">
+                        </div>
+
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                            <small><strong><i class="bi bi-bookmark-star"></i> Saved Watchlists:</strong></small>
+                            <button type="button" class="btn btn-sm btn-link text-danger" onclick="clearTickerHistory()" style="padding: 0; font-size: 0.8em;">Clear All</button>
+                        </div>
+                        <div id="history-chips">
+                            <!-- Populated by JS -->
+                        </div>
+                    </div>
                 </div>
                 
                 <div class="mb-3">
@@ -42,6 +71,8 @@
                         Automatically reconnect and refresh token when connection fails (recommended)
                     </small>
                 </div>
+
+
                 
                 <button type="submit" class="btn btn-primary">
                     <i class="bi bi-play-circle"></i> Start Stream
@@ -63,10 +94,269 @@
                 <p class="text-muted">Loading streams...</p>
             </div>
         </div>
+    <!-- Modals -->
+    <!-- Save Watchlist Modal -->
+    <div class="modal fade" id="saveWatchlistModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Save Watchlist</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label for="watchlistNameInput" class="form-label">Name functionality for likely groups (e.g. 'Banking', 'My Portfolio')</label>
+                        <input type="text" class="form-control" id="watchlistNameInput" placeholder="Enter name...">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="confirmSaveWatchlist()">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirmation Modal -->
+    <div class="modal fade" id="confirmActionModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Confirm Action</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p id="confirmMessage">Are you sure?</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="confirmBtn">Confirm</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- Load Options Modal -->
+    <div class="modal fade" id="loadOptionsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Load Watchlist</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p>You already have tickers selected. How do you want to load the new ones?</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-info" id="btnAppend">Append</button>
+                    <button type="button" class="btn btn-danger" id="btnReplace">Replace</button>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 
+<script>
+// Modal instances
+let saveModal, confirmModal, loadModal;
+let pendingConfirmAction = null;
+let pendingLoadItem = null;
+
+document.addEventListener('DOMContentLoaded', () => {
+    saveModal = new bootstrap.Modal(document.getElementById('saveWatchlistModal'));
+    confirmModal = new bootstrap.Modal(document.getElementById('confirmActionModal'));
+    loadModal = new bootstrap.Modal(document.getElementById('loadOptionsModal'));
+    
+    // Load Watchlist Modal Listeners
+    const btnReplace = document.getElementById('btnReplace');
+    if (btnReplace) {
+        btnReplace.addEventListener('click', () => {
+            if (pendingLoadItem) {
+                currentTickers.clear();
+                document.querySelectorAll('.chip').forEach(c => c.remove());
+                pendingLoadItem.tickers.forEach(t => addTicker(t));
+            }
+            loadModal.hide();
+        });
+    }
+    
+    const btnAppend = document.getElementById('btnAppend');
+    if (btnAppend) {
+        btnAppend.addEventListener('click', () => {
+            if (pendingLoadItem) {
+                pendingLoadItem.tickers.forEach(t => addTicker(t));
+            }
+            loadModal.hide();
+        });
+    }
+});
+
+function showConfirm(message, action) {
+    document.getElementById('confirmMessage').innerText = message;
+    pendingConfirmAction = action;
+    confirmModal.show();
+}
+
+document.getElementById('confirmBtn').addEventListener('click', () => {
+    if (pendingConfirmAction) pendingConfirmAction();
+    confirmModal.hide();
+});
+
+// Update saveCurrentAsIndex to use Modal
+function saveCurrentAsIndex() {
+    if (currentTickers.size === 0) {
+        showAlert('Add some tickers first!', 'warning');
+        return;
+    }
+    
+    // Set default name
+    const defaultName = `Watchlist (${Array.from(currentTickers).slice(0,3).join(',')})`;
+    document.getElementById('watchlistNameInput').value = defaultName;
+    
+    saveModal.show();
+}
+
+function confirmSaveWatchlist() {
+    const name = document.getElementById('watchlistNameInput').value.trim();
+    if (!name) return;
+    
+    saveModal.hide();
+    
+    const history = JSON.parse(localStorage.getItem('ticker_history') || '[]');
+    
+    // Check for duplicates
+    if (history.some(h => h.name === name)) {
+        showConfirm(`Overwrite existing watchlist "${name}"?`, () => {
+            performSave(name, history);
+        });
+    } else {
+        performSave(name, history);
+    }
+}
+
+function performSave(name, history) {
+    // Remove old one if exists
+    const index = history.findIndex(h => h.name === name);
+    if (index > -1) history.splice(index, 1);
+    
+    history.unshift({
+        name: name,
+        tickers: Array.from(currentTickers),
+        count: currentTickers.size,
+        date: new Date().toISOString()
+    });
+    
+    // limit to 20
+    if (history.length > 20) history.pop();
+    
+    localStorage.setItem('ticker_history', JSON.stringify(history));
+    loadTickerHistory();
+    
+    // Ensure section is visible
+    document.getElementById('history-section').style.display = 'block';
+    
+    showAlert(`Saved watchlist "${name}"!`, 'success');
+}
+
+function deleteHistoryItem(index) {
+    showConfirm('Delete this watchlist?', () => {
+        const history = JSON.parse(localStorage.getItem('ticker_history') || '[]');
+        history.splice(index, 1);
+        localStorage.setItem('ticker_history', JSON.stringify(history));
+        loadTickerHistory();
+    });
+}
+
+function clearTickerHistory() {
+    showConfirm('Clear all saved watchlists?', () => {
+        localStorage.removeItem('ticker_history');
+        loadTickerHistory();
+        showAlert('Watchlists cleared', 'success');
+    });
+}
+// END Modal logic overrides
+</script>
+
 <style>
+/* Chip Selectors */
+.chip-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    min-height: 100px;
+    background: white;
+    cursor: text;
+}
+
+.chip-container:focus-within {
+    border-color: #86b7fe;
+    box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+}
+
+.chip {
+    display: inline-flex;
+    align-items: center;
+    background: #e9ecef;
+    padding: 4px 10px;
+    border-radius: 16px;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.chip .close-btn {
+    margin-left: 8px;
+    cursor: pointer;
+    color: #6c757d;
+    font-weight: bold;
+}
+
+.chip .close-btn:hover {
+    color: #dc3545;
+}
+
+.chip-input {
+    border: none;
+    outline: none;
+    padding: 4px;
+    flex: 1;
+    min-width: 60px;
+}
+
+/* History Chips */
+.history-section {
+    margin-top: 10px;
+    padding: 10px;
+    background: #f8f9fa;
+    border-radius: 4px;
+    border: 1px dashed #dee2e6;
+}
+
+.history-chip {
+    display: inline-block;
+    background: white;
+    border: 1px solid #ced4da;
+    padding: 4px 8px;
+    border-radius: 4px;
+    margin-right: 5px;
+    margin-bottom: 5px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.history-chip:hover {
+    background: #e9ecef;
+    border-color: #adb5bd;
+}
+
+.history-chip i {
+    color: #28a745;
+    margin-right: 4px;
+}
+
+/* Existing Styles */
 .stream-card {
     border: 1px solid #dee2e6;
     border-radius: 0.25rem;
@@ -158,6 +448,10 @@ document.getElementById('startStreamForm').addEventListener('submit', async (e) 
     const tickers = document.getElementById('tickers').value;
     const autoReconnect = document.getElementById('autoReconnect').checked;
     
+    // Get override values
+    const token = document.getElementById('bearer-token').value.trim();
+    const cookies = document.getElementById('cookies-override').value.trim();
+    
     if (!tickers.trim()) {
         showAlert('Please enter at least one ticker', 'warning');
         return;
@@ -167,9 +461,9 @@ document.getElementById('startStreamForm').addEventListener('submit', async (e) 
         tickers,
         max_retries: autoReconnect ? null : 0  // null = infinite retries, 0 = no retries
     };
-    if (sessionId) {
-        payload.session_id = sessionId;
-    }
+    if (sessionId) payload.session_id = sessionId;
+    if (token) payload.token = token;
+    if (cookies) payload.cookies = cookies;
     
     try {
         const response = await fetch('/api/orderbook/streams', {
@@ -183,12 +477,26 @@ document.getElementById('startStreamForm').addEventListener('submit', async (e) 
         if (data.success) {
             showAlert(`Stream started: ${data.session_id}. Connecting to WebSocket...`, 'success');
             document.getElementById('startStreamForm').reset();
+            // Clear current tickers and chips
+            currentTickers.clear();
+            document.querySelectorAll('.chip').forEach(c => c.remove());
+            updateTickersInput();
+            
             // refresh immediately, then again after 2 seconds to show connection status
             refreshStreams();
             setTimeout(refreshStreams, 2000);
+            
+            // Auto-save to history
+            if (currentTickers.size > 0) {
+                saveToRecentRuns(Array.from(currentTickers));
+            }
+            
+            if (token) {
+                saveToRecentTokens(token);
+            }
         } else {
             if (data.requires_login) {
-                showAlert('⚠️ ' + (data.error || 'Authentication required') + ' - Please update your token in Settings', 'warning');
+                showAlert('⚠️ ' + (data.error || 'Authentication required') + ' - Please update your token in Settings or use Override', 'warning');
             } else {
                 showAlert('❌ ' + (data.error || 'Failed to start stream'), 'danger');
             }
@@ -197,6 +505,176 @@ document.getElementById('startStreamForm').addEventListener('submit', async (e) 
         showAlert('Error starting stream: ' + error.message, 'danger');
     }
 });
+
+// Global Set to track tickers
+let currentTickers = new Set();
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    initChipInput();
+    loadTickerHistory();
+    loadRecentRuns();
+});
+
+// --- Chip Input Logic ---
+function initChipInput() {
+    const input = document.getElementById('ticker-input');
+    const container = document.querySelector('.chip-container');
+    
+    // Focus input when clicking container
+    container.addEventListener('click', () => input.focus());
+    
+    if (input) {
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ',') {
+                e.preventDefault();
+                const value = input.value.trim().toUpperCase();
+                if (value) {
+                    const parts = value.split(/[\n,]+/);
+                    parts.forEach(part => {
+                        const clean = part.trim();
+                        if (clean) addTicker(clean);
+                    });
+                    input.value = '';
+                }
+            } else if (e.key === 'Backspace' && input.value === '' && currentTickers.size > 0) {
+                const chips = container.querySelectorAll('.chip');
+                if (chips.length > 0) {
+                    const lastChip = chips[chips.length - 1];
+                    removeTicker(lastChip.dataset.ticker);
+                }
+            }
+        });
+        
+        input.addEventListener('paste', (e) => {
+            e.preventDefault();
+            const text = (e.clipboardData || window.clipboardData).getData('text');
+            const parts = text.split(/[\n,]+/);
+            parts.forEach(part => {
+                const clean = part.trim().toUpperCase();
+                if (clean) addTicker(clean);
+            });
+            input.value = '';
+        });
+    }
+}
+
+function addTicker(ticker) {
+    if (currentTickers.has(ticker)) return;
+    currentTickers.add(ticker);
+    updateTickersInput();
+    
+    const chip = document.createElement('div');
+    chip.className = 'chip';
+    chip.dataset.ticker = ticker;
+    chip.innerHTML = `${ticker}<span class="close-btn" onclick="removeTicker('${ticker}')">&times;</span>`;
+    
+    const input = document.getElementById('ticker-input');
+    input.parentNode.insertBefore(chip, input);
+}
+
+function removeTicker(ticker) {
+    if (!currentTickers.has(ticker)) return;
+    currentTickers.delete(ticker);
+    updateTickersInput();
+    
+    const chip = document.querySelector(`.chip[data-ticker="${ticker}"]`);
+    if (chip) chip.remove();
+}
+
+function updateTickersInput() {
+    document.getElementById('tickers').value = Array.from(currentTickers).join('\n');
+}
+
+// --- History Logic ---
+function loadTickerHistory() {
+    const history = JSON.parse(localStorage.getItem('ticker_history') || '[]');
+    const container = document.getElementById('history-chips');
+    const section = document.getElementById('history-section');
+    
+    // Check if we have any history OR recent runs to show
+    const recentRuns = JSON.parse(localStorage.getItem('recent_runs') || '[]');
+    
+    if (history.length === 0 && recentRuns.length === 0) {
+        section.style.display = 'none';
+        return;
+    }
+    
+    section.style.display = 'block';
+    container.innerHTML = history.map((item, index) => `
+        <div class="history-chip" onclick="loadTickerSetFromHistory(${index})">
+            <i class="bi bi-bookmark"></i> ${item.name} 
+            <span class="badge bg-light text-dark border ms-1">${item.count}</span>
+            <span onclick="event.stopPropagation(); deleteHistoryItem(${index})" class="ms-2 text-danger fw-bold" style="cursor: pointer;">&times;</span>
+        </div>
+    `).join('');
+}
+
+function loadRecentRuns() {
+    const recent = JSON.parse(localStorage.getItem('recent_runs') || '[]');
+    const container = document.getElementById('recent-runs-chips');
+    const section = document.getElementById('recent-runs-container');
+    
+    if (recent.length === 0) {
+        section.style.display = 'none';
+        return;
+    }
+    
+    section.style.display = 'block';
+    container.innerHTML = recent.map((item, index) => `
+        <div class="history-chip" onclick="loadTickerSetFromRecent(${index})">
+            <span class="badge bg-secondary me-1">${item.tickers.length}</span>
+            ${item.tickers.slice(0, 3).join(', ')}${item.tickers.length > 3 ? '...' : ''}
+        </div>
+    `).join('');
+}
+
+function saveToRecentRuns(tickersArray) {
+    let recent = JSON.parse(localStorage.getItem('recent_runs') || '[]');
+    
+    // Remove duplicate if exists (check by sorted string content)
+    const newSig = tickersArray.slice().sort().join(',');
+    recent = recent.filter(r => r.tickers.slice().sort().join(',') !== newSig);
+    
+    // Add new to top
+    recent.unshift({
+        tickers: tickersArray,
+        date: new Date().toISOString()
+    });
+    
+    // Keep max 5
+    if (recent.length > 5) recent.pop();
+    
+    localStorage.setItem('recent_runs', JSON.stringify(recent));
+    loadRecentRuns();
+    
+    // Ensure history section is visible
+    document.getElementById('history-section').style.display = 'block';
+}
+
+function loadTickerSetFromHistory(index) {
+    const history = JSON.parse(localStorage.getItem('ticker_history') || '[]');
+    loadTickerSet(history[index]);
+}
+
+function loadTickerSetFromRecent(index) {
+    const recent = JSON.parse(localStorage.getItem('recent_runs') || '[]');
+    loadTickerSet(recent[index]);
+}
+
+// Replaces the bad block with just the function
+function loadTickerSet(item) {
+    if (item && item.tickers) {
+        if (currentTickers.size > 0) {
+            pendingLoadItem = item;
+            loadModal.show();
+        } else {
+            item.tickers.forEach(t => addTicker(t));
+        }
+    }
+}
+
+
 
 // load and display streams
 async function refreshStreams() {

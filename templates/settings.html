@@ -7,9 +7,67 @@
     <h1>Settings</h1>
     
     <!-- Token Management -->
-    <div class="card mt-4">
-        <div class="card-header">
-            <h3>Bearer Token</h3>
+    <!-- Token Management -->
+    
+    <!-- Current Session Details -->
+    <div class="card mb-4 shadow-sm">
+        <div class="card-header bg-info text-white">
+            <h5 class="mb-0"><i class="bi bi-shield-lock"></i> Current Session Details</h5>
+        </div>
+        <div class="card-body">
+            <div class="mb-3">
+                <label class="form-label fw-bold">Current Bearer Token to be used in script</label>
+                <div class="input-group">
+                    <input type="text" class="form-control font-monospace" id="current-token" readonly value="Loading..." style="background-color: #f8f9fa;">
+                    <button class="btn btn-outline-primary" type="button" onclick="copyToClipboard('current-token')">
+                        <i class="bi bi-clipboard"></i> Copy
+                    </button>
+                </div>
+            </div>
+            
+            <div class="mb-3">
+                <label class="form-label fw-bold">Current Cookies to be used in script</label>
+                <div class="input-group">
+                    <input type="text" class="form-control font-monospace" id="current-cookies" readonly value="Loading..." style="background-color: #f8f9fa;">
+                    <button class="btn btn-outline-primary" type="button" onclick="copyToClipboard('current-cookies')">
+                        <i class="bi bi-clipboard"></i> Copy
+                    </button>
+                </div>
+            </div>
+
+            <div class="d-flex gap-2">
+                <button class="btn btn-outline-info" type="button" data-bs-toggle="collapse" data-bs-target="#tokenDecoder" aria-expanded="false" aria-controls="tokenDecoder" onclick="decodeCurrentToken()">
+                    <i class="bi bi-code-square"></i> Decode JWT
+                </button>
+                <button class="btn btn-primary" type="button" onclick="toggleUpdateForm()">
+                    <i class="bi bi-pencil-square"></i> Update Token & Cookies
+                </button>
+            </div>
+
+            <div class="collapse mt-3" id="tokenDecoder">
+                <div class="card card-body bg-light border-info">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6 class="text-muted small text-uppercase">Header</h6>
+                            <pre id="jwt-header" class="bg-white p-2 border rounded small" style="max-height: 200px; overflow: auto;"></pre>
+                        </div>
+                        <div class="col-md-6">
+                            <h6 class="text-muted small text-uppercase">Payload</h6>
+                            <pre id="jwt-payload" class="bg-white p-2 border rounded small" style="max-height: 200px; overflow: auto;"></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Manual Update (Hidden by default) -->
+    <div class="card mt-4" id="update-credentials-card" style="display: none;">
+        <div class="card-header bg-primary text-white">
+            <div class="d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-key"></i> Update Credentials</h5>
+                <button type="button" class="btn-close btn-close-white" onclick="toggleUpdateForm()" aria-label="Close"></button>
+            </div>
         </div>
         <div class="card-body">
             <div class="alert alert-info">
@@ -124,25 +182,41 @@ function checkTokenStatus() {
         .then(data => {
             const statusDiv = document.getElementById('token-status-display');
             
+            // Populate current session details
+            const tokenInput = document.getElementById('current-token');
+            const cookiesInput = document.getElementById('current-cookies');
+            
+            if (data.token) {
+                tokenInput.value = data.token;
+            } else {
+                tokenInput.value = 'Not Set';
+            }
+            
+            if (data.cookies) {
+                cookiesInput.value = data.cookies;
+            } else {
+                cookiesInput.value = 'Not Set';
+            }
+            
             if (data.valid) {
                 const timeLeft = Math.floor(data.time_until_expiry / 60);
                 statusDiv.innerHTML = `
                     <div class="alert alert-success">
-                        <strong><i class="fas fa-check-circle"></i> Token is valid</strong><br>
+                        <strong><i class="bi bi-check-circle"></i> Token is valid</strong><br>
                         Expires in ${timeLeft} minutes
                     </div>
                 `;
             } else if (data.expired) {
                 statusDiv.innerHTML = `
                     <div class="alert alert-danger">
-                        <strong><i class="fas fa-exclamation-circle"></i> Token expired</strong><br>
+                        <strong><i class="bi bi-exclamation-circle"></i> Token expired</strong><br>
                         Please enter a new token below
                     </div>
                 `;
             } else {
                 statusDiv.innerHTML = `
                     <div class="alert alert-warning">
-                        <strong><i class="fas fa-exclamation-triangle"></i> No token set</strong><br>
+                        <strong><i class="bi bi-exclamation-triangle"></i> No token set</strong><br>
                         Please enter your Bearer token below
                     </div>
                 `;
@@ -152,6 +226,100 @@ function checkTokenStatus() {
             console.error('Failed to check token status:', err);
         });
 }
+
+// simple hash function for privacy
+function hashString(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+        const char = str.charCodeAt(i);
+        hash = (hash << 5) - hash + char;
+        hash = hash & hash; // Convert to 32bit integer
+    }
+    return hash.toString();
+}
+
+// UI Helpers
+function toggleUpdateForm() {
+    const card = document.getElementById('update-credentials-card');
+    if (card.style.display === 'none') {
+        card.style.display = 'block';
+        // scroll to card
+        card.scrollIntoView({ behavior: 'smooth' });
+    } else {
+        card.style.display = 'none';
+    }
+}
+
+function copyToClipboard(id) {
+    const input = document.getElementById(id);
+    input.select();
+    input.setSelectionRange(0, 99999); // For mobile devices
+    navigator.clipboard.writeText(input.value).then(() => {
+        const btn = input.nextElementSibling;
+        const originalContent = btn.innerHTML;
+        btn.innerHTML = '<i class="bi bi-check"></i> Copied';
+        btn.classList.replace('btn-outline-primary', 'btn-success');
+        setTimeout(() => {
+            btn.innerHTML = originalContent;
+            btn.classList.replace('btn-success', 'btn-outline-primary');
+        }, 1500);
+    });
+}
+
+function decodeCurrentToken() {
+    const token = document.getElementById('current-token').value;
+    if (!token || token === 'Loading...' || token === 'Not Set') {
+        document.getElementById('jwt-header').textContent = 'No token available to decode.';
+        document.getElementById('jwt-payload').textContent = '';
+        return;
+    }
+
+    try {
+        const parts = token.split('.');
+        if (parts.length !== 3) {
+            throw new Error('Invalid JWT format');
+        }
+
+        const header = JSON.parse(atob(parts[0]));
+        const payload = JSON.parse(atob(parts[1]));
+
+        document.getElementById('jwt-header').textContent = JSON.stringify(header, null, 2);
+        document.getElementById('jwt-payload').textContent = JSON.stringify(payload, null, 2);
+    } catch (e) {
+        document.getElementById('jwt-header').textContent = 'Error decoding token: ' + e.message;
+        document.getElementById('jwt-payload').textContent = '';
+    }
+}
+
+// Check if token matches history on input
+document.getElementById('bearer-token').addEventListener('input', function(e) {
+    const token = e.target.value.trim();
+    if (!token) {
+        document.getElementById('token-status-display').innerHTML = '';
+        return;
+    }
+    
+    const history = JSON.parse(localStorage.getItem('token_history') || '{}');
+    const currentHash = hashString(token);
+    
+    // Check main history list too
+    const listHistory = JSON.parse(localStorage.getItem('token_usage_history') || '[]');
+    const isInList = listHistory.some(h => hashString(h.token) === currentHash);
+    
+    if (history.hash === currentHash || isInList) {
+        const lastDate = new Date(history.date || new Date()); 
+        const statusDiv = document.getElementById('token-status-display');
+        
+        statusDiv.innerHTML = `
+            <div class="alert alert-info py-2">
+                <strong><i class="bi bi-info-circle"></i> Info:</strong> 
+                You have used this token before.
+            </div>
+        `;
+    } else {
+        document.getElementById('token-status-display').innerHTML = '';
+    }
+});
 
 // handle token form submission
 document.getElementById('token-form').addEventListener('submit', (e) => {
@@ -186,6 +354,27 @@ document.getElementById('token-form').addEventListener('submit', (e) => {
                 message += ` ${data.resumed_jobs} paused job(s) resumed!`;
             }
             showNotification(message, 'success');
+            
+            // Save to history
+            const hash = hashString(token);
+            const history = {
+                hash: hash,
+                date: new Date().toISOString()
+            };
+            localStorage.setItem('token_history', JSON.stringify(history));
+            
+            // Also save to recent list for orderbook
+            let listHistory = JSON.parse(localStorage.getItem('token_usage_history') || '[]');
+            listHistory = listHistory.filter(h => hashString(h.token) !== hash);
+            listHistory.unshift({
+                token: token,
+                preview: token.slice(-6),
+                date: new Date().toISOString()
+            });
+            if (listHistory.length > 5) listHistory.pop();
+            localStorage.setItem('token_usage_history', JSON.stringify(listHistory));
+            
+            // Clear inputs and refresh status
             document.getElementById('bearer-token').value = '';
             document.getElementById('cookies').value = '';
             checkTokenStatus();
@@ -234,7 +423,7 @@ function showNotification(message, type) {
     notification.className = `alert ${alertClass} alert-dismissible fade show position-fixed top-0 start-50 translate-middle-x mt-3`;
     notification.style.zIndex = '9999';
     notification.innerHTML = `
-        <i class="fas fa-${icon}"></i> ${message}
+        <i class="bi bi-${icon}"></i> ${message}
         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     `;
     

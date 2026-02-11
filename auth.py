@@ -85,9 +85,11 @@ class TokenManager:
             logger.error(f"Failed to get userId from token: {e}")
             return None
     
-    def fetch_trading_key(self) -> Optional[str]:
+    def fetch_trading_key(self, token: str = None) -> Optional[str]:
         """Fetch trading key for WebSocket connection"""
-        token = self.get_valid_token()
+        if not token:
+            token = self.get_valid_token()
+        
         if not token:
             logger.error("No valid token available to fetch trading key")
             return None
@@ -213,5 +215,7 @@ class TokenManager:
             'expired': False,
             'time_until_expiry': time_left,
             'expires_at': datetime.fromtimestamp(self.exp).isoformat() if self.exp else None,
-            'message': f'Token valid for {time_left // 60} minutes' if time_left else 'Token is valid'
+            'message': f'Token valid for {time_left // 60} minutes' if time_left else 'Token is valid',
+            'token': self.token,
+            'cookies': self.cookies
         }

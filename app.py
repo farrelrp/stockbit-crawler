@@ -356,6 +356,8 @@ def api_orderbook_start_stream():
     
     session_id = data.get('session_id', f"stream_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
     max_retries = data.get('max_retries', None)  # None = infinite retries
+    token = data.get('token')
+    cookies = data.get('cookies')
     
     # parse tickers
     tickers_input = data.get('tickers', [])
@@ -370,9 +372,10 @@ def api_orderbook_start_stream():
             'error': 'At least one ticker required'
         }), 400
     
-    logger.info(f"Starting orderbook stream for {len(tickers)} tickers (max_retries={max_retries})")
+    logger.info(f"Starting orderbook stream for {len(tickers)} tickers (max_retries={max_retries})" + 
+                (" [TOKEN OVERRIDE]" if token else ""))
     
-    result = orderbook_manager.start_stream(session_id, tickers, max_retries=max_retries)
+    result = orderbook_manager.start_stream(session_id, tickers, max_retries=max_retries, token=token, cookies=cookies)
     
     if result.get('success'):
         return jsonify(result)

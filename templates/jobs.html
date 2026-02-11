@@ -4,6 +4,84 @@
 
 {% block content %}
 <div class="jobs">
+    <style>
+        .chip-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding: 8px;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            min-height: 100px;
+            background: white;
+            cursor: text;
+        }
+        
+        .chip-container:focus-within {
+            border-color: #86b7fe;
+            box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+        }
+
+        .chip {
+            display: inline-flex;
+            align-items: center;
+            background: #e9ecef;
+            padding: 4px 10px;
+            border-radius: 16px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .chip .close-btn {
+            margin-left: 8px;
+            cursor: pointer;
+            color: #6c757d;
+            font-weight: bold;
+        }
+        
+        .chip .close-btn:hover {
+            color: #dc3545;
+        }
+
+        .chip-input {
+            border: none;
+            outline: none;
+            padding: 4px;
+            flex: 1;
+            min-width: 60px;
+        }
+        
+        /* Historical Index Styles */
+        .history-section {
+            margin-top: 10px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            border: 1px dashed #dee2e6;
+        }
+        
+        .history-chip {
+            display: inline-block;
+            background: white;
+            border: 1px solid #ced4da;
+            padding: 4px 8px;
+            border-radius: 4px;
+            margin-right: 5px;
+            margin-bottom: 5px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        
+        .history-chip:hover {
+            background: #e9ecef;
+            border-color: #adb5bd;
+        }
+        
+        .history-chip i {
+            color: #28a745;
+            margin-right: 4px;
+        }
+    </style>
     <h2>Jobs Management</h2>
     
     <!-- Create new job form -->
@@ -11,10 +89,31 @@
         <h3>Create New Job</h3>
         <form id="create-job-form" class="form">
             <div class="form-group">
-                <label for="tickers">Stock Tickers</label>
-                <textarea id="tickers" name="tickers" rows="3" class="form-control" 
-                          placeholder="Enter tickers (one per line)&#10;Example:&#10;BIRD&#10;BBCA&#10;TLKM" required></textarea>
-                <small>Enter one ticker per line (e.g., BIRD, BBCA, TLKM)</small>
+                <label for="ticker-input">Stock Tickers</label>
+                <!-- Hidden input to store actual value for form submission -->
+                <textarea id="tickers" name="tickers" style="display: none;"></textarea>
+                
+                <!-- Chip Container -->
+                <div class="chip-container" onclick="document.getElementById('ticker-input').focus()">
+                    <input type="text" class="chip-input" id="ticker-input" placeholder="Type ticker & press Enter (e.g. BBCA) ..." autocomplete="off">
+                </div>
+                <small class="text-muted">Type a ticker and press Enter or Comma. Backspace to delete.</small>
+                
+                <!-- History / Quick Add -->
+                <div class="history-section" id="history-section" style="display: none;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                        <small><strong><i class="fas fa-history"></i> Recent & Saved Indices:</strong></small>
+                        <button type="button" class="btn btn-sm btn-link text-danger" onclick="clearTickerHistory()" style="padding: 0; font-size: 0.8em;">Clear History</button>
+                    </div>
+                    <div id="history-chips">
+                        <!-- Populated by JS -->
+                    </div>
+                    <div class="mt-2">
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="saveCurrentAsIndex()">
+                            <i class="fas fa-save"></i> Save Current Selection as Index
+                        </button>
+                    </div>
+                </div>
             </div>
             
             <div class="form-row">
@@ -89,6 +188,175 @@
 
 <script>
 let jobsRefreshInterval;
+let currentTickers = new Set();
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    loadDefaults();
+    initChipInput();
+    loadTickerHistory();
+});
+
+// --- Chip Input Logic ---
+function initChipInput() {
+    const input = document.getElementById('ticker-input');
+    const container = document.querySelector('.chip-container');
+    
+    // Focus input when clicking container
+    container.addEventListener('click', () => input.focus());
+    
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ',') {
+            e.preventDefault();
+            const value = input.value.trim().toUpperCase();
+            if (value) {
+                // Split by comma in case user pasted "A,B,C"
+                const parts = value.split(/[\n,]+/);
+                parts.forEach(part => {
+                    const clean = part.trim();
+                    if (clean) addTicker(clean);
+                });
+                input.value = '';
+            }
+        } else if (e.key === 'Backspace' && input.value === '' && currentTickers.size > 0) {
+            // Remove last tag on backspace
+            const chips = container.querySelectorAll('.chip');
+            if (chips.length > 0) {
+                const lastChip = chips[chips.length - 1];
+                removeTicker(lastChip.dataset.ticker);
+            }
+        }
+    });
+    
+    // Handle paste
+    input.addEventListener('paste', (e) => {
+        e.preventDefault();
+        const text = (e.clipboardData || window.clipboardData).getData('text');
+        const parts = text.split(/[\n,]+/);
+        parts.forEach(part => {
+            const clean = part.trim().toUpperCase();
+            if (clean) addTicker(clean);
+        });
+        input.value = '';
+    });
+}
+
+function addTicker(ticker) {
+    if (currentTickers.has(ticker)) return;
+    
+    currentTickers.add(ticker);
+    updateTickersInput();
+    
+    const chip = document.createElement('div');
+    chip.className = 'chip';
+    chip.dataset.ticker = ticker;
+    chip.innerHTML = `
+        ${ticker}
+        <span class="close-btn" onclick="removeTicker('${ticker}')">&times;</span>
+    `;
+    
+    const input = document.getElementById('ticker-input');
+    input.parentNode.insertBefore(chip, input);
+}
+
+function removeTicker(ticker) {
+    if (!currentTickers.has(ticker)) return;
+    
+    currentTickers.delete(ticker);
+    updateTickersInput();
+    
+    const chip = document.querySelector(`.chip[data-ticker="${ticker}"]`);
+    if (chip) chip.remove();
+}
+
+function updateTickersInput() {
+    const textarea = document.getElementById('tickers');
+    textarea.value = Array.from(currentTickers).join('\n');
+}
+
+// --- History Logic ---
+function loadTickerHistory() {
+    const history = JSON.parse(localStorage.getItem('ticker_history') || '[]');
+    const container = document.getElementById('history-chips');
+    const section = document.getElementById('history-section');
+    
+    if (history.length === 0) {
+        section.style.display = 'none';
+        return;
+    }
+    
+    section.style.display = 'block';
+    container.innerHTML = history.map((item, index) => `
+        <div class="history-chip" onclick="loadTickerSet(${index})">
+            <i class="fas fa-layer-group"></i> ${item.name} 
+            <span class="badge badge-light text-dark" style="font-size:0.8em; margin-left:4px;">${item.count}</span>
+            <span onclick="event.stopPropagation(); deleteHistoryItem(${index})" style="margin-left:5px; color:#dc3545; font-weight:bold;">&times;</span>
+        </div>
+    `).join('');
+}
+
+function saveCurrentAsIndex() {
+    if (currentTickers.size === 0) {
+        showNotification('Add some tickers first!', 'warning');
+        return;
+    }
+    
+    const name = prompt("Enter a name for this index/watchlist (e.g. 'Banking', 'My Watchlist'):");
+    if (!name) return;
+    
+    const history = JSON.parse(localStorage.getItem('ticker_history') || '[]');
+    history.unshift({
+        name: name,
+        tickers: Array.from(currentTickers),
+        count: currentTickers.size,
+        date: new Date().toISOString()
+    });
+    
+    // Keep max 20 items
+    if (history.length > 20) history.pop();
+    
+    localStorage.setItem('ticker_history', JSON.stringify(history));
+    loadTickerHistory();
+    showNotification(`Saved "${name}" to history!`, 'success');
+}
+
+function loadTickerSet(index) {
+    const history = JSON.parse(localStorage.getItem('ticker_history') || '[]');
+    const item = history[index];
+    
+    if (item && item.tickers) {
+        // Option: clear existing or append? Let's clear for "Index" behavior
+        // But maybe user wants to merge. Let's confirm if current is not empty.
+        if (currentTickers.size > 0) {
+            if (!confirm(`Replace current tickers with "${item.name}"? Cancel to Append.`)) {
+                // Append mode
+                // No action needed, just add
+            } else {
+                // Replace mode
+                currentTickers.clear();
+                document.querySelectorAll('.chip').forEach(c => c.remove());
+            }
+        }
+        
+        item.tickers.forEach(t => addTicker(t));
+        showNotification(`Loaded ${item.name}`, 'success');
+    }
+}
+
+function deleteHistoryItem(index) {
+    const history = JSON.parse(localStorage.getItem('ticker_history') || '[]');
+    history.splice(index, 1);
+    localStorage.setItem('ticker_history', JSON.stringify(history));
+    loadTickerHistory();
+}
+
+function clearTickerHistory() {
+    if (confirm('Clear all saved indices?')) {
+        localStorage.removeItem('ticker_history');
+        loadTickerHistory();
+        showNotification('History cleared', 'success');
+    }
+}
 
 // Load defaults from localStorage
 function loadDefaults() {

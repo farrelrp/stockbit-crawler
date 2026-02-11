@@ -36,7 +36,8 @@ class OrderbookManager:
             self.thread.start()
             logger.info("Started background event loop for orderbook streaming")
     
-    def start_stream(self, session_id: str, tickers: List[str], max_retries: int = None) -> Dict:
+    def start_stream(self, session_id: str, tickers: List[str], max_retries: int = None, 
+                     token: str = None, cookies: str = None) -> Dict:
         """
         Start a new orderbook streaming session with auto-reconnect
         
@@ -44,9 +45,8 @@ class OrderbookManager:
             session_id: Unique identifier for this session
             tickers: List of stock symbols to stream
             max_retries: Maximum reconnection attempts (None = infinite)
-        
-        Returns:
-            Dict with success status and session info
+            token: Optional Bearer token override
+            cookies: Optional cookies override
         """
         try:
             # check if session already exists
@@ -56,19 +56,25 @@ class OrderbookManager:
                     'error': f'Session {session_id} already exists'
                 }
             
-            # validate token
-            if not self.token_manager.get_valid_token():
+            # validate token (unless override provided)
+            if not token and not self.token_manager.get_valid_token():
                 return {
                     'success': False,
-                    'error': 'No valid token available. Please set your Bearer token.',
+                    'error': 'No valid token available. Please set your Bearer token or provide one.',
                     'requires_login': True
                 }
             
             # ensure event loop is running
             self._ensure_event_loop()
             
-            # create streamer with retry capability
-            streamer = OrderbookStreamer(self.token_manager, tickers, max_retries=max_retries)
+            # create streamer with retry capability and overrides
+            streamer = OrderbookStreamer(
+                self.token_manager, 
+                tickers, 
+                max_retries=max_retries,
+                override_token=token,
+                override_cookies=cookies
+            )
             
             # schedule the streamer on the event loop
             future = asyncio.run_coroutine_threadsafe(streamer.run(), self.loop)

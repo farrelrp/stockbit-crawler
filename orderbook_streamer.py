@@ -286,10 +286,15 @@ class OrderbookCSVStorage:
 class OrderbookStreamer:
     """WebSocket streamer for orderbook data across multiple stocks"""
     
-    def __init__(self, token_manager, tickers: List[str], max_retries: int = None, retry_delay: int = 5):
+    def __init__(self, token_manager, tickers: List[str], max_retries: int = None, retry_delay: int = 5, 
+                 override_token: str = None, override_cookies: str = None):
         self.token_manager = token_manager
         self.tickers = [t.upper() for t in tickers]
         self.csv_storage = OrderbookCSVStorage()
+        
+        # overrides
+        self.override_token = override_token
+        self.override_cookies = override_cookies
         
         self.websocket = None
         self.running = False
@@ -309,19 +314,43 @@ class OrderbookStreamer:
         self.last_disconnect_time = None
         self.total_reconnects = 0
         
-        logger.info(f"OrderbookStreamer initialized for {len(self.tickers)} tickers")
+        logger.info(f"OrderbookStreamer initialized for {len(self.tickers)} tickers" + 
+                    (" (with token override)" if override_token else ""))
     
     async def connect(self):
         """Establish WebSocket connection and subscribe to orderbook"""
         self.connection_status = 'connecting'
         
-        # refresh token before connecting
-        logger.info("Refreshing token before connection attempt...")
-        access_token = self.token_manager.get_valid_token()
+        # Use override token if provided, otherwise refresh/get from manager
+        if self.override_token:
+            logger.info("Using provided override token")
+            access_token = self.override_token
+            # Note: with override token, we can't easily validate expiration without decoding, 
+            # so we assume it's valid or let the server reject it.
+        else:
+            # refresh token before connecting
+            logger.info("Refreshing token before connection attempt...")
+            access_token = self.token_manager.get_valid_token()
         
         # fetch required auth data
-        user_id = self.token_manager.get_user_id()
-        trading_key = self.token_manager.fetch_trading_key()
+        # Note: get_user_id might need modification if it relies on self.token in manager
+        # But token_manager.get_user_id() uses self.token. 
+        # If we have override, we should probably decode it ourselves or add a method to manager.
+        # ideally token_manager.get_user_id(token) but it's not implemented that way.
+        # Let's try to use the token_manager's decode helper if possible.
+        
+        if self.override_token:
+             # Manually decode if overriding
+             try:
+                 payload = self.token_manager.decode_token(access_token)
+                 user_id = payload.get('data', {}).get('uid')
+             except:
+                 user_id = None
+        else:
+             user_id = self.token_manager.get_user_id()
+
+        # Pass token to fetch_trading_key (which we just modified to accept it)
+        trading_key = self.token_manager.fetch_trading_key(token=access_token)
         
         if not user_id or not trading_key or not access_token:
             self.connection_status = 'error'
@@ -341,10 +370,16 @@ class OrderbookStreamer:
         }
         
         # Add cookies if available (important for session persistence!)
-        cookies = self.token_manager.get_cookies()
+        if self.override_cookies:
+            cookies = self.override_cookies
+            logger.info(f"Using override cookies (length: {len(cookies)} chars)")
+        else:
+            cookies = self.token_manager.get_cookies()
+            if cookies:
+                logger.info(f"Using stored session cookies (length: {len(cookies)} chars)")
+        
         if cookies:
             extra_headers['Cookie'] = cookies
-            logger.info(f"Using session cookies (length: {len(cookies)} chars)")
         
         try:
             # Match Postman behavior: NO client-initiated pings
