@@ -156,126 +156,7 @@
     </div>
 </div>
 
-<script>
-// Modal instances
-let saveModal, confirmModal, loadModal;
-let pendingConfirmAction = null;
-let pendingLoadItem = null;
 
-document.addEventListener('DOMContentLoaded', () => {
-    saveModal = new bootstrap.Modal(document.getElementById('saveWatchlistModal'));
-    confirmModal = new bootstrap.Modal(document.getElementById('confirmActionModal'));
-    loadModal = new bootstrap.Modal(document.getElementById('loadOptionsModal'));
-    
-    // Load Watchlist Modal Listeners
-    const btnReplace = document.getElementById('btnReplace');
-    if (btnReplace) {
-        btnReplace.addEventListener('click', () => {
-            if (pendingLoadItem) {
-                currentTickers.clear();
-                document.querySelectorAll('.chip').forEach(c => c.remove());
-                pendingLoadItem.tickers.forEach(t => addTicker(t));
-            }
-            loadModal.hide();
-        });
-    }
-    
-    const btnAppend = document.getElementById('btnAppend');
-    if (btnAppend) {
-        btnAppend.addEventListener('click', () => {
-            if (pendingLoadItem) {
-                pendingLoadItem.tickers.forEach(t => addTicker(t));
-            }
-            loadModal.hide();
-        });
-    }
-});
-
-function showConfirm(message, action) {
-    document.getElementById('confirmMessage').innerText = message;
-    pendingConfirmAction = action;
-    confirmModal.show();
-}
-
-document.getElementById('confirmBtn').addEventListener('click', () => {
-    if (pendingConfirmAction) pendingConfirmAction();
-    confirmModal.hide();
-});
-
-// Update saveCurrentAsIndex to use Modal
-function saveCurrentAsIndex() {
-    if (currentTickers.size === 0) {
-        showAlert('Add some tickers first!', 'warning');
-        return;
-    }
-    
-    // Set default name
-    const defaultName = `Watchlist (${Array.from(currentTickers).slice(0,3).join(',')})`;
-    document.getElementById('watchlistNameInput').value = defaultName;
-    
-    saveModal.show();
-}
-
-function confirmSaveWatchlist() {
-    const name = document.getElementById('watchlistNameInput').value.trim();
-    if (!name) return;
-    
-    saveModal.hide();
-    
-    const history = JSON.parse(localStorage.getItem('ticker_history') || '[]');
-    
-    // Check for duplicates
-    if (history.some(h => h.name === name)) {
-        showConfirm(`Overwrite existing watchlist "${name}"?`, () => {
-            performSave(name, history);
-        });
-    } else {
-        performSave(name, history);
-    }
-}
-
-function performSave(name, history) {
-    // Remove old one if exists
-    const index = history.findIndex(h => h.name === name);
-    if (index > -1) history.splice(index, 1);
-    
-    history.unshift({
-        name: name,
-        tickers: Array.from(currentTickers),
-        count: currentTickers.size,
-        date: new Date().toISOString()
-    });
-    
-    // limit to 20
-    if (history.length > 20) history.pop();
-    
-    localStorage.setItem('ticker_history', JSON.stringify(history));
-    loadTickerHistory();
-    
-    // Ensure section is visible
-    document.getElementById('history-section').style.display = 'block';
-    
-    showAlert(`Saved watchlist "${name}"!`, 'success');
-}
-
-function deleteHistoryItem(index) {
-    showConfirm('Delete this watchlist?', () => {
-        const history = JSON.parse(localStorage.getItem('ticker_history') || '[]');
-        history.splice(index, 1);
-        localStorage.setItem('ticker_history', JSON.stringify(history));
-        loadTickerHistory();
-    });
-}
-
-function clearTickerHistory() {
-    showConfirm('Clear all saved watchlists?', () => {
-        localStorage.removeItem('ticker_history');
-        loadTickerHistory();
-        showAlert('Watchlists cleared', 'success');
-    });
-}
-// END Modal logic overrides
-</script>
 
 <style>
 /* Chip Selectors */
@@ -440,6 +321,157 @@ function clearTickerHistory() {
 <script>
 let refreshInterval;
 
+// Modal instances
+let saveModal, confirmModal, loadModal;
+let pendingConfirmAction = null;
+let pendingLoadItem = null;
+
+// Global Set to track tickers
+let currentTickers = new Set();
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    initChipInput();
+    loadTickerHistory();
+    loadRecentRuns();
+    
+    // Initialize Modals
+    saveModal = new bootstrap.Modal(document.getElementById('saveWatchlistModal'));
+    confirmModal = new bootstrap.Modal(document.getElementById('confirmActionModal'));
+    loadModal = new bootstrap.Modal(document.getElementById('loadOptionsModal'));
+    
+    // Load Watchlist Modal Listeners
+    const btnReplace = document.getElementById('btnReplace');
+    if (btnReplace) {
+        btnReplace.addEventListener('click', () => {
+            if (pendingLoadItem) {
+                currentTickers.clear();
+                document.querySelectorAll('.chip').forEach(c => c.remove());
+                pendingLoadItem.tickers.forEach(t => addTicker(t));
+            }
+            loadModal.hide();
+        });
+    }
+    
+    const btnAppend = document.getElementById('btnAppend');
+    if (btnAppend) {
+        btnAppend.addEventListener('click', () => {
+            if (pendingLoadItem) {
+                pendingLoadItem.tickers.forEach(t => addTicker(t));
+            }
+            loadModal.hide();
+        });
+    }
+    
+    // Confirm Button Listener
+    const confirmBtn = document.getElementById('confirmBtn');
+    if (confirmBtn) {
+        confirmBtn.addEventListener('click', () => {
+            if (pendingConfirmAction) pendingConfirmAction();
+            confirmModal.hide();
+        });
+    }
+});
+
+
+// Helper to ensure modals are initialized
+function ensureModalsInitialized() {
+    if (!saveModal) {
+        const saveModalEl = document.getElementById('saveWatchlistModal');
+        if (saveModalEl) saveModal = new bootstrap.Modal(saveModalEl);
+    }
+    if (!confirmModal) {
+        const confirmModalEl = document.getElementById('confirmActionModal');
+        if (confirmModalEl) confirmModal = new bootstrap.Modal(confirmModalEl);
+    }
+    if (!loadModal) {
+        const loadModalEl = document.getElementById('loadOptionsModal');
+        if (loadModalEl) loadModal = new bootstrap.Modal(loadModalEl);
+    }
+}
+
+function showConfirm(message, action) {
+    ensureModalsInitialized();
+    document.getElementById('confirmMessage').innerText = message;
+    pendingConfirmAction = action;
+    confirmModal.show();
+}
+
+// Update saveCurrentAsIndex to use Modal
+function saveCurrentAsIndex() {
+    if (currentTickers.size === 0) {
+        showAlert('Add some tickers first!', 'warning');
+        return;
+    }
+    
+    ensureModalsInitialized();
+    
+    // Set default name
+    const defaultName = `Watchlist (${Array.from(currentTickers).slice(0,3).join(',')})`;
+    document.getElementById('watchlistNameInput').value = defaultName;
+    
+    saveModal.show();
+}
+
+function confirmSaveWatchlist() {
+    const name = document.getElementById('watchlistNameInput').value.trim();
+    if (!name) return;
+    
+    saveModal.hide();
+    
+    const history = JSON.parse(localStorage.getItem('ticker_history') || '[]');
+    
+    // Check for duplicates
+    if (history.some(h => h.name === name)) {
+        showConfirm(`Overwrite existing watchlist "${name}"?`, () => {
+            performSave(name, history);
+        });
+    } else {
+        performSave(name, history);
+    }
+}
+
+function performSave(name, history) {
+    // Remove old one if exists
+    const index = history.findIndex(h => h.name === name);
+    if (index > -1) history.splice(index, 1);
+    
+    history.unshift({
+        name: name,
+        tickers: Array.from(currentTickers),
+        count: currentTickers.size,
+        date: new Date().toISOString()
+    });
+    
+    // limit to 20
+    if (history.length > 20) history.pop();
+    
+    localStorage.setItem('ticker_history', JSON.stringify(history));
+    loadTickerHistory();
+    
+    // Ensure section is visible
+    document.getElementById('history-section').style.display = 'block';
+    
+    showAlert(`Saved watchlist "${name}"!`, 'success');
+}
+
+function deleteHistoryItem(index) {
+    showConfirm('Delete this watchlist?', () => {
+        const history = JSON.parse(localStorage.getItem('ticker_history') || '[]');
+        history.splice(index, 1);
+        localStorage.setItem('ticker_history', JSON.stringify(history));
+        loadTickerHistory();
+    });
+}
+
+function clearTickerHistory() {
+    showConfirm('Clear all saved watchlists?', () => {
+        localStorage.removeItem('ticker_history');
+        loadTickerHistory();
+        showAlert('Watchlists cleared', 'success');
+    });
+}
+
 // start stream
 document.getElementById('startStreamForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -447,10 +479,6 @@ document.getElementById('startStreamForm').addEventListener('submit', async (e) 
     const sessionId = document.getElementById('sessionId').value.trim();
     const tickers = document.getElementById('tickers').value;
     const autoReconnect = document.getElementById('autoReconnect').checked;
-    
-    // Get override values
-    const token = document.getElementById('bearer-token').value.trim();
-    const cookies = document.getElementById('cookies-override').value.trim();
     
     if (!tickers.trim()) {
         showAlert('Please enter at least one ticker', 'warning');
@@ -462,8 +490,6 @@ document.getElementById('startStreamForm').addEventListener('submit', async (e) 
         max_retries: autoReconnect ? null : 0  // null = infinite retries, 0 = no retries
     };
     if (sessionId) payload.session_id = sessionId;
-    if (token) payload.token = token;
-    if (cookies) payload.cookies = cookies;
     
     try {
         const response = await fetch('/api/orderbook/streams', {
@@ -490,10 +516,6 @@ document.getElementById('startStreamForm').addEventListener('submit', async (e) 
             if (currentTickers.size > 0) {
                 saveToRecentRuns(Array.from(currentTickers));
             }
-            
-            if (token) {
-                saveToRecentTokens(token);
-            }
         } else {
             if (data.requires_login) {
                 showAlert('⚠️ ' + (data.error || 'Authentication required') + ' - Please update your token in Settings or use Override', 'warning');
@@ -506,15 +528,6 @@ document.getElementById('startStreamForm').addEventListener('submit', async (e) 
     }
 });
 
-// Global Set to track tickers
-let currentTickers = new Set();
-
-// Initialize
-document.addEventListener('DOMContentLoaded', () => {
-    initChipInput();
-    loadTickerHistory();
-    loadRecentRuns();
-});
 
 // --- Chip Input Logic ---
 function initChipInput() {
