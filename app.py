@@ -27,15 +27,21 @@ import time
 
 from config import (
     SECRET_KEY, DEBUG, LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
-    LOG_MEMORY_LINES, DEFAULT_DELAY_SECONDS, DEFAULT_LIMIT, ORDERBOOK_DIR
+    LOG_MEMORY_LINES, DEFAULT_DELAY_SECONDS, DEFAULT_LIMIT, ORDERBOOK_DIR,
+    ORDERBOOK_WATCHLIST_FILE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+    TELEGRAM_HEARTBEAT_MINUTES
 )
 from auth import TokenManager
 from stockbit_client import StockbitClient
 from storage import CSVStorage
 from jobs import JobManager
 from orderbook_manager import OrderbookManager
+from orderbook_daemon import OrderbookDaemon
 from perspective_server import start_perspective_server, get_perspective_server
 from replay_engine import get_replay_engine
+
+# Module-level globals for Telegram bot (set in __main__)
+telegram_bot_instance = None
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -78,12 +84,141 @@ def setup_logging():
 setup_logging()
 logger = logging.getLogger(__name__)
 
+# ===== INDONESIAN MARKET HOURS LOGIC =====
+
+def get_market_status():
+    """
+    Determine current Indonesian market status and calculate next open time
+    
+    Returns:
+        Dict with:
+            - status: 'open', 'closed', or 'break'
+            - current_time: current WIB time
+            - next_open: datetime of next session open (None if currently open)
+            - next_close: datetime of next session close (None if currently closed)
+            - time_until_next: seconds until next open (0 if open)
+            - session: which session (1 or 2, None if closed)
+    """
+    from datetime import datetime, timedelta
+    import pytz
+    
+    # Indonesia Western Time (WIB) is GMT+7
+    wib_tz = pytz.timezone('Asia/Jakarta')
+    now_wib = datetime.now(wib_tz)
+    
+    # Market is closed on weekends
+    if now_wib.weekday() >= 5:  # Saturday=5, Sunday=6
+        # Calculate next Monday 9:00 AM
+        days_until_monday = 7 - now_wib.weekday()
+        next_monday = now_wib.date() + timedelta(days=days_until_monday)
+        next_open = wib_tz.localize(datetime.combine(next_monday, datetime.strptime('08:55', '%H:%M').time()))
+        
+        return {
+            'status': 'closed',
+            'current_time': now_wib.isoformat(),
+            'next_open': next_open.isoformat(),
+            'next_close': None,
+            'time_until_next': int((next_open - now_wib).total_seconds()),
+            'session': None,
+            'reason': 'Weekend'
+        }
+    
+    # Define market hours with 5-minute margins
+    # Monday-Thursday schedule
+    if now_wib.weekday() < 4:  # Monday=0 to Thursday=3
+        session1_open = datetime.strptime('08:55', '%H:%M').time()  # 9:00 - 5min margin
+        session1_close = datetime.strptime('12:05', '%H:%M').time()  # 12:00 + 5min margin
+        session2_open = datetime.strptime('13:25', '%H:%M').time()  # 13:30 - 5min margin
+        session2_close = datetime.strptime('15:54', '%H:%M').time()  # 15:49 + 5min margin
+    else:  # Friday=4
+        session1_open = datetime.strptime('08:55', '%H:%M').time()
+        session1_close = datetime.strptime('11:35', '%H:%M').time()  # 11:30 + 5min margin
+        session2_open = datetime.strptime('13:55', '%H:%M').time()  # 14:00 - 5min margin
+        session2_close = datetime.strptime('15:54', '%H:%M').time()
+    
+    current_time = now_wib.time()
+    today = now_wib.date()
+    
+    # Check if we're in session 1
+    if session1_open <= current_time < session1_close:
+        next_close = wib_tz.localize(datetime.combine(today, session1_close))
+        return {
+            'status': 'open',
+            'current_time': now_wib.isoformat(),
+            'next_open': None,
+            'next_close': next_close.isoformat(),
+            'time_until_next': 0,
+            'session': 1,
+            'reason': 'Session 1'
+        }
+    
+    # Check if we're in session 2
+    elif session2_open <= current_time < session2_close:
+        next_close = wib_tz.localize(datetime.combine(today, session2_close))
+        return {
+            'status': 'open',
+            'current_time': now_wib.isoformat(),
+            'next_open': None,
+            'next_close': next_close.isoformat(),
+            'time_until_next': 0,
+            'session': 2,
+            'reason': 'Session 2'
+        }
+    
+    # Check if we're in lunch break
+    elif session1_close <= current_time < session2_open:
+        next_open = wib_tz.localize(datetime.combine(today, session2_open))
+        return {
+            'status': 'break',
+            'current_time': now_wib.isoformat(),
+            'next_open': next_open.isoformat(),
+            'next_close': None,
+            'time_until_next': int((next_open - now_wib).total_seconds()),
+            'session': None,
+            'reason': 'Lunch Break'
+        }
+    
+    # Before market opens today
+    elif current_time < session1_open:
+        next_open = wib_tz.localize(datetime.combine(today, session1_open))
+        return {
+            'status': 'closed',
+            'current_time': now_wib.isoformat(),
+            'next_open': next_open.isoformat(),
+            'next_close': None,
+            'time_until_next': int((next_open - now_wib).total_seconds()),
+            'session': None,
+            'reason': 'Pre-Market'
+        }
+    
+    # After market closes today (after session 2)
+    else:
+        # Calculate next trading day
+        if now_wib.weekday() == 4:  # Friday
+            days_ahead = 3  # Next Monday
+        else:
+            days_ahead = 1  # Tomorrow
+        
+        next_day = today + timedelta(days=days_ahead)
+        next_open = wib_tz.localize(datetime.combine(next_day, datetime.strptime('08:55', '%H:%M').time()))
+        
+        return {
+            'status': 'closed',
+            'current_time': now_wib.isoformat(),
+            'next_open': next_open.isoformat(),
+            'next_close': None,
+            'time_until_next': int((next_open - now_wib).total_seconds()),
+            'session': None,
+            'reason': 'After Hours'
+        }
+
 # Initialize components
 token_manager = TokenManager()
 stockbit_client = StockbitClient(token_manager)
 csv_storage = CSVStorage()
 job_manager = JobManager(stockbit_client, csv_storage)
 orderbook_manager = OrderbookManager(token_manager)
+orderbook_daemon = OrderbookDaemon(token_manager, ORDERBOOK_WATCHLIST_FILE)
 
 # Initialize Perspective server and replay engine
 perspective_server = None
@@ -222,6 +357,49 @@ def api_token_set():
     else:
         logger.error(f"Failed to set token: {result.get('error')}")
         return jsonify(result)
+
+# --- Auto Login ---
+auto_auth_instance = None
+
+def _get_auto_auth():
+    """Lazy-load AutoAuth (pure Python, no external browser deps)."""
+    global auto_auth_instance
+    if auto_auth_instance is None:
+        from auto_auth import AutoAuth
+        auto_auth_instance = AutoAuth(token_manager)
+    return auto_auth_instance
+
+@app.route('/api/token/auto-login', methods=['POST'])
+def api_token_auto_login():
+    """Start automated login: 2Captcha v3 + direct HTTP POST."""
+    auto_auth = _get_auto_auth()
+
+    data = request.get_json() or {}
+    email = data.get('email', '').strip() or None
+    password = data.get('password', '').strip() or None
+
+    result = auto_auth.start_login(email=email, password=password)
+    return jsonify(result)
+
+@app.route('/api/token/auto-login/status', methods=['GET'])
+def api_token_auto_login_status():
+    """Get auto-login progress and result."""
+    auto_auth = _get_auto_auth()
+    if not auto_auth:
+        return jsonify({'running': False, 'status': 'unavailable', 'progress': [], 'result': None})
+    return jsonify(auto_auth.get_status())
+
+@app.route('/api/token/auto-login/config', methods=['GET'])
+def api_token_auto_login_config():
+    """Check if 2Captcha API key is configured."""
+    from config import TWOCAPTCHA_API_KEY
+    key = TWOCAPTCHA_API_KEY
+    has_key = bool(key and key.strip())
+    masked = key[:4] + '...' + key[-4:] if has_key and len(key) > 8 else ''
+    return jsonify({
+        'has_captcha_key': has_key,
+        'captcha_key_masked': masked,
+    })
 
 # --- Jobs ---
 
@@ -407,6 +585,100 @@ def api_orderbook_stop_stream(session_id):
         return jsonify(result)
     else:
         return jsonify(result), 400
+
+@app.route('/api/orderbook/streams/<session_id>/refresh', methods=['POST'])
+def api_orderbook_refresh_stream(session_id):
+    """Refresh (restart) an orderbook streaming session"""
+    result = orderbook_manager.refresh_stream(session_id)
+    
+    if result.get('success'):
+        return jsonify(result)
+    else:
+        return jsonify(result), 400
+
+@app.route('/api/orderbook/market-status', methods=['GET'])
+def api_orderbook_market_status():
+    """Get current Indonesian market status and timing information"""
+    try:
+        status = get_market_status()
+        return jsonify({
+            'success': True,
+            **status
+        })
+    except Exception as e:
+        logger.error(f"Error getting market status: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+# --- Orderbook Daemon ---
+
+@app.route('/api/orderbook/daemon/status', methods=['GET'])
+def api_orderbook_daemon_status():
+    """Get full daemon status"""
+    try:
+        status = orderbook_daemon.get_status()
+        return jsonify({'success': True, **status})
+    except Exception as e:
+        logger.error(f"Error getting daemon status: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/orderbook/daemon/tickers', methods=['POST'])
+def api_orderbook_daemon_set_tickers():
+    """Set/update daemon watchlist tickers"""
+    data = request.get_json() or {}
+    action = data.get('action', 'set')  # set, add, remove
+    
+    tickers_input = data.get('tickers', [])
+    if isinstance(tickers_input, str):
+        tickers = [t.strip().upper() for t in tickers_input.split(',') if t.strip()]
+    else:
+        tickers = [t.strip().upper() for t in tickers_input if t.strip()]
+    
+    if action == 'add':
+        result = orderbook_daemon.add_tickers(tickers)
+    elif action == 'remove':
+        result = orderbook_daemon.remove_tickers(tickers)
+    else:
+        result = orderbook_daemon.set_tickers(tickers)
+    
+    return jsonify(result)
+
+@app.route('/api/orderbook/daemon/pause', methods=['POST'])
+def api_orderbook_daemon_pause():
+    """Pause the daemon stream"""
+    result = orderbook_daemon.pause()
+    return jsonify(result)
+
+@app.route('/api/orderbook/daemon/resume', methods=['POST'])
+def api_orderbook_daemon_resume():
+    """Resume the daemon stream"""
+    result = orderbook_daemon.resume()
+    return jsonify(result)
+
+@app.route('/api/orderbook/daemon/reconnect', methods=['POST'])
+def api_orderbook_daemon_reconnect():
+    """Set token/cookies and reconnect the stream"""
+    data = request.get_json() or {}
+    token = data.get('token', '').strip()
+    cookies = data.get('cookies', '').strip()
+    
+    if not token:
+        return jsonify({'success': False, 'error': 'Token required'}), 400
+    
+    result = orderbook_daemon.set_token_and_reconnect(token, cookies if cookies else None)
+    return jsonify(result)
+
+@app.route('/api/orderbook/daemon/recap', methods=['GET'])
+def api_orderbook_daemon_recap():
+    """Get daily recap"""
+    try:
+        recap = orderbook_daemon.get_daily_recap()
+        return jsonify({'success': True, **recap})
+    except Exception as e:
+        logger.error(f"Error getting daemon recap: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 # --- Market Replay ---
 
@@ -827,6 +1099,37 @@ def api_get_current_orderbook():
         'last_offer_timestamp': replay_engine.last_offer_timestamp.isoformat() if replay_engine.last_offer_timestamp else None
     })
 
+# --- Telegram Bot ---
+
+@app.route('/api/telegram/status', methods=['GET'])
+def api_telegram_status():
+    """Get Telegram bot status for UI"""
+    if telegram_bot_instance:
+        status = telegram_bot_instance.get_status()
+        return jsonify({'success': True, **status})
+    else:
+        return jsonify({
+            'success': True,
+            'running': False,
+            'token_configured': bool(TELEGRAM_BOT_TOKEN),
+            'chat_id_configured': bool(TELEGRAM_CHAT_ID),
+            'bot_info': None,
+            'job_queue_available': False,
+            'last_error': 'Bot not initialized (missing python-telegram-bot or token)',
+        })
+
+@app.route('/api/telegram/test', methods=['POST'])
+def api_telegram_test():
+    """Send a test message via Telegram bot"""
+    if not telegram_bot_instance:
+        return jsonify({'success': False, 'error': 'Telegram bot is not running'}), 400
+    
+    result = telegram_bot_instance.send_test_message()
+    if result.get('success'):
+        return jsonify(result)
+    else:
+        return jsonify(result), 400
+
 # --- Logs ---
 
 @app.route('/api/logs', methods=['GET'])
@@ -880,29 +1183,87 @@ def server_error(e):
 
 if __name__ == '__main__':
     import os
+    import atexit
+    import signal
     
     logger.info("Starting Stockbit Running Trade Scraper")
     logger.info(f"Debug mode: {DEBUG}")
     
-    # start job worker
-    job_manager.start_worker()
-    
-    # Only initialize Perspective in the reloader process (or when debug=False)
-    # This prevents "address already in use" error in debug mode
-    if not DEBUG or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
-        init_perspective()
-    
-    try:
-        app.run(host='0.0.0.0', port=5151, debug=DEBUG)
-    finally:
-        # cleanup on shutdown
+    def _cleanup():
+        """Shared cleanup — registered with atexit so it runs even when
+        Windows TerminateProcess bypasses finally blocks."""
         logger.info("Shutting down")
         job_manager.stop_worker()
+        orderbook_daemon.stop()
         orderbook_manager.stop_all()
+        if telegram_bot_instance:
+            telegram_bot_instance.stop()
         if replay_engine:
             replay_engine.stop()
         if perspective_server:
             perspective_server.stop()
+    
+    # Only run background tasks in the reloader child (or if debug is off).
+    # This prevents running two instances of the bot/daemon when using Flask reloader.
+    if not DEBUG or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+        job_manager.start_worker()
+        
+        init_perspective()
+        
+        orderbook_daemon.start()
+        logger.info("Orderbook daemon started")
+        
+        # -- optional Google Drive uploader --
+        gdrive_uploader = None
+        try:
+            from config import (
+                GDRIVE_SERVICE_ACCOUNT_FILE, GDRIVE_FOLDER_ID,
+                GDRIVE_DELETE_AFTER_UPLOAD,
+            )
+            if GDRIVE_SERVICE_ACCOUNT_FILE and GDRIVE_FOLDER_ID:
+                from pathlib import Path as _P
+                sa_path = _P(GDRIVE_SERVICE_ACCOUNT_FILE)
+                if sa_path.exists():
+                    from gdrive_uploader import GDriveUploader
+                    gdrive_uploader = GDriveUploader(
+                        str(sa_path), GDRIVE_FOLDER_ID,
+                        delete_after_upload=GDRIVE_DELETE_AFTER_UPLOAD,
+                    )
+                    logger.info("Google Drive uploader initialised")
+                else:
+                    logger.info(f"GDrive service account file not found ({sa_path}), uploads disabled")
+        except (ImportError, AttributeError) as e:
+            logger.info(f"Google Drive upload disabled: {e}")
+
+        if TELEGRAM_BOT_TOKEN:
+            try:
+                from telegram_bot import TelegramBot
+                telegram_bot_instance = TelegramBot(
+                    token=TELEGRAM_BOT_TOKEN,
+                    chat_id=TELEGRAM_CHAT_ID,
+                    daemon=orderbook_daemon,
+                    heartbeat_minutes=TELEGRAM_HEARTBEAT_MINUTES,
+                    job_manager=job_manager,
+                    gdrive_uploader=gdrive_uploader,
+                    orderbook_dir=ORDERBOOK_DIR,
+                )
+                telegram_bot_instance.start()
+                logger.info("Telegram bot started")
+            except ImportError:
+                logger.warning("python-telegram-bot not installed. Telegram bot disabled.")
+            except Exception as e:
+                logger.error(f"Failed to start Telegram bot: {e}", exc_info=True)
+        else:
+            logger.info("Telegram bot not configured (no TELEGRAM_BOT_TOKEN). Set it in .env to enable.")
+        
+        atexit.register(_cleanup)
+    else:
+        logger.info("Skipping background tasks in reloader monitor process")
+    
+    try:
+        app.run(host='0.0.0.0', port=5151, debug=DEBUG)
+    finally:
+        _cleanup()
 
 
 

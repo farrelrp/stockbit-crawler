@@ -1,0 +1,22 @@
+[Unit]
+Description=Orderbook Streaming Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/flask-saham
+ExecStart=/home/YOUR_USER/flask-saham/venv/bin/python run_daemon.py
+Restart=always
+RestartSec=10
+
+# env file
+EnvironmentFile=/home/YOUR_USER/flask-saham/.env
+
+# logging goes to journalctl by default, app also writes to logs/app.log
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

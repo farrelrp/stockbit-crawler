@@ -95,9 +95,29 @@ class JobManager:
         self.stop_flag = threading.Event()
         self.pause_flag = threading.Event()
         self.db = JobDatabase()
+
+        # external notification callback — set by TelegramBot or others
+        # signature: callback(event: str, data: dict)
+        self._notification_callback = None
         
         # load persisted jobs on startup
         self._load_jobs_from_db()
+
+    def set_notification_callback(self, callback):
+        """Register a callback for job lifecycle events.
+
+        Events emitted:
+            job_started, job_progress, job_completed, job_failed, job_paused
+        """
+        self._notification_callback = callback
+
+    def _notify(self, event: str, data: Dict[str, Any]):
+        """Fire the notification callback if one is registered."""
+        if self._notification_callback:
+            try:
+                self._notification_callback(event, data)
+            except Exception as e:
+                logger.error(f"Notification callback error ({event}): {e}")
     
     def _load_jobs_from_db(self):
         """Load persisted jobs from database on startup"""
@@ -306,9 +326,19 @@ class JobManager:
         job.status = JobStatus.RUNNING
         job.started_at = datetime.now().isoformat()
         self.current_job_id = job.job_id
+        self._last_milestone = 0  # track progress milestones per job
         
         workers = job.parallel_workers
         logger.info(f"Starting job {job.job_id} with {workers} parallel worker(s)")
+
+        self._notify('job_started', {
+            'job_id': job.job_id,
+            'tickers': job.tickers,
+            'from_date': job.from_date,
+            'until_date': job.until_date,
+            'total_tasks': len(job.tasks),
+            'parallel_workers': workers,
+        })
         
         try:
             # get pending tasks
@@ -372,11 +402,31 @@ class JobManager:
             job.completed_at = datetime.now().isoformat()
             self._persist_job(job)
             logger.info(f"[OK] Job {job.job_id} completed")
+
+            progress = job.get_progress()
+            self._notify('job_completed', {
+                'job_id': job.job_id,
+                'tickers': job.tickers,
+                'from_date': job.from_date,
+                'until_date': job.until_date,
+                'total_tasks': progress['total'],
+                'completed_tasks': progress['completed'],
+                'failed_tasks': progress['failed'],
+                'total_records': sum(t.records_fetched for t in job.tasks),
+                'started_at': job.started_at,
+                'completed_at': job.completed_at,
+            })
             
         except Exception as e:
             logger.error(f"Job {job.job_id} failed with error: {e}")
             job.status = JobStatus.FAILED
             self._persist_job(job)
+
+            self._notify('job_failed', {
+                'job_id': job.job_id,
+                'tickers': job.tickers,
+                'error': str(e),
+            })
         
         finally:
             self.current_job_id = None
@@ -428,6 +478,20 @@ class JobManager:
                     progress = job.get_progress()
                     if progress['completed'] % 5 == 0:
                         self._persist_job(job)
+
+                    # send milestone notifications at 25/50/75%
+                    pct = progress['percentage']
+                    for milestone in (25, 50, 75):
+                        if pct >= milestone and getattr(self, '_last_milestone', 0) < milestone:
+                            self._last_milestone = milestone
+                            self._notify('job_progress', {
+                                'job_id': job.job_id,
+                                'tickers': job.tickers,
+                                'percentage': pct,
+                                'completed': progress['completed'],
+                                'total': progress['total'],
+                                'failed': progress['failed'],
+                            })
                 else:
                     task.status = TaskStatus.FAILED
                     task.error = save_result.get('error', 'Unknown save error')
@@ -439,23 +503,31 @@ class JobManager:
                 
                 # handle special cases - pause job gracefully
                 if result.get('requires_login'):
-                    # token issue - pause job and reset task to pending
                     job.status = JobStatus.PAUSED
-                    task.status = TaskStatus.PENDING  # will retry when resumed
+                    task.status = TaskStatus.PENDING
                     task.error = 'Token expired - job paused'
                     task.current_page = 0
                     self._persist_job(job)
-                    logger.warning(f"🔐 Job {job.job_id} PAUSED - Token expired. Set new token to resume.")
+                    logger.warning(f"Job {job.job_id} PAUSED - Token expired. Set new token to resume.")
+                    self._notify('job_paused', {
+                        'job_id': job.job_id,
+                        'tickers': job.tickers,
+                        'reason': 'Token expired',
+                    })
                     return
                 
                 elif result.get('captcha_required'):
-                    # captcha - pause job
                     job.status = JobStatus.PAUSED
                     task.status = TaskStatus.PENDING
                     task.error = 'Captcha required'
                     task.current_page = 0
                     self._persist_job(job)
                     logger.warning(f"Job {job.job_id} paused due to captcha")
+                    self._notify('job_paused', {
+                        'job_id': job.job_id,
+                        'tickers': job.tickers,
+                        'reason': 'Captcha required',
+                    })
                     return
                 
                 else:

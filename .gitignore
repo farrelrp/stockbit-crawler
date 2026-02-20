@@ -1,4 +1,5 @@
 # Python
+.env
 __pycache__/
 *.py[cod]
 *$py.class
@@ -48,6 +49,9 @@ Thumbs.db
 # Environment variables
 .env
 .env.local
+
+# Google Drive service account key (sensitive)
+*service-account*.json
 
 # Selenium
 chromedriver

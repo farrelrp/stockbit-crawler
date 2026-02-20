@@ -105,6 +105,61 @@ class OrderbookManager:
                 'error': str(e)
             }
     
+    def refresh_stream(self, session_id: str) -> Dict:
+        """
+        Refresh (restart) an orderbook streaming session
+        Useful when token is updated or connection needs manual reset
+        
+        Args:
+            session_id: Session identifier to refresh
+        
+        Returns:
+            Dict with success status
+        """
+        try:
+            if session_id not in self.sessions:
+                return {
+                    'success': False,
+                    'error': f'Session {session_id} not found'
+                }
+            
+            session = self.sessions[session_id]
+            tickers = session['tickers']
+            
+            logger.info(f"Refreshing orderbook stream '{session_id}' with {len(tickers)} tickers")
+            
+            # Stop the current stream
+            stop_result = self.stop_stream(session_id)
+            if not stop_result.get('success'):
+                return stop_result
+            
+            # Remove old session
+            del self.sessions[session_id]
+            
+            # Start a new stream with the same tickers
+            import time
+            time.sleep(0.5)  # Brief delay to ensure clean shutdown
+            
+            start_result = self.start_stream(session_id, tickers)
+            
+            if start_result.get('success'):
+                logger.info(f"Successfully refreshed orderbook stream '{session_id}'")
+                return {
+                    'success': True,
+                    'session_id': session_id,
+                    'message': 'Stream refreshed successfully',
+                    'tickers': tickers
+                }
+            else:
+                return start_result
+            
+        except Exception as e:
+            logger.error(f"Failed to refresh orderbook stream: {e}", exc_info=True)
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
     def stop_stream(self, session_id: str) -> Dict:
         """
         Stop an orderbook streaming session

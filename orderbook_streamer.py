@@ -567,8 +567,8 @@ class OrderbookStreamer:
                     break
                 
                 if self.retry_count > 0:
-                    # calculate exponential backoff delay (capped at 5 minutes)
-                    delay = min(self.retry_delay * (2 ** (self.retry_count - 1)), 300)
+                    # calculate exponential backoff delay (capped at 30 seconds)
+                    delay = min(self.retry_delay * (2 ** (self.retry_count - 1)), 30)
                     logger.info(f"[RETRY] Attempt {self.retry_count}, waiting {delay}s before reconnecting...")
                     self.connection_status = f'retrying ({delay}s)'
                     await asyncio.sleep(delay)
@@ -629,6 +629,13 @@ class OrderbookStreamer:
         
         self.csv_storage.close_all()
         logger.info("[STOP] OrderbookStreamer stopped")
+
+    def reset_retries(self):
+        """Reset retry counter — called by daemon before a planned restart"""
+        self.retry_count = 0
+        self.last_error = None
+        self.connection_status = 'disconnected'
+        logger.info("[RESET] Retry counter reset")
     
     def get_stats(self) -> Dict:
         """Get current streaming statistics"""

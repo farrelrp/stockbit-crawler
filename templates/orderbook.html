@@ -10,90 +10,183 @@
     <!-- Status Alert -->
     <div id="statusAlert" class="alert d-none" role="alert"></div>
     
-    <!-- Start New Stream Card -->
-    <div class="card mb-4">
-        <div class="card-header">
-            <h5 class="mb-0">Start New Orderbook Stream</h5>
+    <!-- Daemon Status Card -->
+    <div class="card mb-4" id="daemonStatusCard">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="mb-0">
+                <i class="bi bi-broadcast"></i> Streaming Daemon
+            </h5>
+            <div>
+                <span id="daemonStateBadge" class="badge me-2">--</span>
+                <span id="marketStatusBadge" class="badge">--</span>
+            </div>
         </div>
         <div class="card-body">
-            <form id="startStreamForm">
-                <div class="mb-3">
-                    <label for="sessionId" class="form-label">Session ID (optional)</label>
-                    <input type="text" class="form-control" id="sessionId" 
-                           placeholder="Leave blank for auto-generated ID">
-                    <small class="form-text text-muted">Unique identifier for this streaming session</small>
-                </div>
-                
-                <div class="mb-3">
-                    <label for="ticker-input" class="form-label">Tickers</label>
-                    <!-- Hidden input to store actual value for form submission -->
-                    <textarea id="tickers" style="display: none;"></textarea>
-                    
-                    <!-- Chip Container -->
-                    <div class="chip-container" onclick="document.getElementById('ticker-input').focus()">
-                        <input type="text" class="chip-input" id="ticker-input" placeholder="Type ticker & press Enter (e.g. BBCA) ..." autocomplete="off">
-                    </div>
-                    <div class="d-flex justify-content-between align-items-center mt-1">
-                        <small class="form-text text-muted">Type a ticker and press Enter or Comma. Backspace to delete.</small>
-                        <button type="button" class="btn btn-sm btn-outline-primary" onclick="saveCurrentAsIndex()">
-                            <i class="bi bi-bookmark-plus"></i> Save as Watchlist
-                        </button>
+            <div class="row">
+                <!-- Left Column: State & Market -->
+                <div class="col-md-6">
+                    <div class="daemon-state-display mb-3">
+                        <div class="d-flex align-items-center mb-2">
+                            <span id="daemonStateIcon" class="state-icon me-2">⏳</span>
+                            <div>
+                                <strong id="daemonStateText" class="fs-5">Loading...</strong>
+                                <div id="daemonStateDetail" class="text-muted small">Initializing daemon</div>
+                            </div>
+                        </div>
                     </div>
                     
-                    <!-- History / Quick Add -->
-                    <div class="history-section" id="history-section" style="display: none;">
-                        
-                        <!-- Recent Runs (Auto-Saved) -->
-                        <div id="recent-runs-container" class="mb-2" style="display: none;">
-                            <small class="text-muted"><strong><i class="bi bi-clock"></i> Recent Runs:</strong></small>
-                            <div id="recent-runs-chips" class="mt-1"></div>
-                            <hr class="my-2" style="opacity: 0.1">
+                    <div class="mb-2">
+                        <strong>Current Time (WIB):</strong> 
+                        <span id="currentTime">--:--:--</span>
+                    </div>
+                    
+                    <div id="countdownSection" style="display: none;">
+                        <div class="mb-2">
+                            <strong id="countdownLabel">Next Open:</strong> 
+                            <span id="countdownTime" class="fs-5 fw-bold">--:--:--</span>
                         </div>
-
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-                            <small><strong><i class="bi bi-bookmark-star"></i> Saved Watchlists:</strong></small>
-                            <button type="button" class="btn btn-sm btn-link text-danger" onclick="clearTickerHistory()" style="padding: 0; font-size: 0.8em;">Clear All</button>
+                        <div class="progress" style="height: 8px;">
+                            <div id="countdownProgress" class="progress-bar" role="progressbar" style="width: 0%"></div>
                         </div>
-                        <div id="history-chips">
-                            <!-- Populated by JS -->
-                        </div>
+                    </div>
+                    
+                    <div class="mt-2">
+                        <small class="text-muted">
+                            <strong>Trading Hours:</strong> Mon-Thu: 09:00-12:00, 13:30-15:49 | Fri: 09:00-11:30, 14:00-15:49 (WIB)
+                        </small>
                     </div>
                 </div>
                 
-                <div class="mb-3">
-                    <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="autoReconnect" checked>
-                        <label class="form-check-label" for="autoReconnect">
-                            <strong>Enable Auto-Reconnect</strong>
-                        </label>
+                <!-- Right Column: Stats -->
+                <div class="col-md-6">
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <div class="stat-label">Uptime</div>
+                            <div class="stat-value" id="statUptime">--</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Total Messages</div>
+                            <div class="stat-value" id="statMessages">0</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Active Tickers</div>
+                            <div class="stat-value" id="statActiveTickers">0</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Reconnects</div>
+                            <div class="stat-value" id="statReconnects">0</div>
+                        </div>
                     </div>
-                    <small class="form-text text-muted">
-                        Automatically reconnect and refresh token when connection fails (recommended)
-                    </small>
+                    
+                    <!-- Connection Status -->
+                    <div id="connectionStatus" class="connection-status mt-3" style="display: none;">
+                        <div class="d-flex align-items-center">
+                            <i id="connIcon" class="bi bi-circle me-2"></i>
+                            <strong id="connText">Unknown</strong>
+                            <span id="connRetryBadge" class="ms-2 badge bg-warning text-dark" style="display: none;"></span>
+                        </div>
+                        <div id="connError" class="mt-1 text-danger small" style="display: none;"></div>
+                    </div>
                 </div>
-
-
-                
-                <button type="submit" class="btn btn-primary">
-                    <i class="bi bi-play-circle"></i> Start Stream
+            </div>
+            
+            <!-- Quick Actions -->
+            <div class="mt-3 d-flex gap-2">
+                <button id="btnPauseResume" class="btn btn-sm btn-warning" onclick="togglePauseResume()">
+                    <i class="bi bi-pause-circle"></i> Pause
                 </button>
-            </form>
+                <button class="btn btn-sm btn-info" onclick="reconnectStream()">
+                    <i class="bi bi-arrow-clockwise"></i> Reconnect
+                </button>
+            </div>
         </div>
     </div>
     
-    <!-- Active Streams -->
-    <div class="card">
+    <!-- Ticker Management Card -->
+    <div class="card mb-4">
         <div class="card-header d-flex justify-content-between align-items-center">
-            <h5 class="mb-0">Active Streams</h5>
-            <button class="btn btn-sm btn-outline-secondary" onclick="refreshStreams()">
+            <h5 class="mb-0"><i class="bi bi-list-check"></i> Watchlist Tickers</h5>
+            <span id="tickerCountBadge" class="badge bg-primary">0 tickers</span>
+        </div>
+        <div class="card-body">
+            <!-- Current Active Tickers Display -->
+            <div class="mb-3" id="activeTickersDisplay">
+                <div id="activeTickerBadges" class="d-flex flex-wrap gap-1">
+                    <span class="text-muted">No tickers configured</span>
+                </div>
+            </div>
+            
+            <!-- Chip Input for Setting Tickers -->
+            <div class="mb-3">
+                <label for="ticker-input" class="form-label">Edit Tickers</label>
+                <textarea id="tickers" style="display: none;"></textarea>
+                
+                <div class="chip-container" onclick="document.getElementById('ticker-input').focus()">
+                    <input type="text" class="chip-input" id="ticker-input" placeholder="Type ticker & press Enter (e.g. BBCA) ..." autocomplete="off">
+                </div>
+                <div class="d-flex justify-content-between align-items-center mt-1">
+                    <small class="form-text text-muted">Type a ticker and press Enter or Comma. Backspace to delete.</small>
+                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="saveCurrentAsWatchlist()">
+                        <i class="bi bi-bookmark-plus"></i> Save as Watchlist
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Action Buttons -->
+            <div class="d-flex gap-2 mb-3">
+                <button class="btn btn-primary" onclick="applyTickers()">
+                    <i class="bi bi-check-circle"></i> Apply Tickers
+                </button>
+                <button class="btn btn-outline-secondary" onclick="loadCurrentTickers()">
+                    <i class="bi bi-arrow-repeat"></i> Load Current
+                </button>
+            </div>
+            
+            <!-- Watchlists / History -->
+            <div class="history-section" id="history-section" style="display: none;">
+                <!-- Recent Runs -->
+                <div id="recent-runs-container" class="mb-2" style="display: none;">
+                    <small class="text-muted"><strong><i class="bi bi-clock"></i> Recent Runs:</strong></small>
+                    <div id="recent-runs-chips" class="mt-1"></div>
+                    <hr class="my-2" style="opacity: 0.1">
+                </div>
+
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                    <small><strong><i class="bi bi-bookmark-star"></i> Saved Watchlists:</strong></small>
+                    <button type="button" class="btn btn-sm btn-link text-danger" onclick="clearTickerHistory()" style="padding: 0; font-size: 0.8em;">Clear All</button>
+                </div>
+                <div id="history-chips"></div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Stream Details Card -->
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="mb-0"><i class="bi bi-bar-chart-line"></i> Stream Details</h5>
+            <button class="btn btn-sm btn-outline-secondary" onclick="refreshDaemonStatus()">
                 <i class="bi bi-arrow-clockwise"></i> Refresh
             </button>
         </div>
         <div class="card-body">
-            <div id="streamsContainer">
-                <p class="text-muted">Loading streams...</p>
+            <div id="streamDetailsContainer">
+                <p class="text-muted">Loading stream details...</p>
             </div>
         </div>
+    </div>
+    
+    <!-- Telegram Status Card -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="mb-0"><i class="bi bi-telegram"></i> Telegram Integration</h5>
+        </div>
+        <div class="card-body">
+            <div id="telegramStatus">
+                <p class="text-muted">Checking Telegram status...</p>
+            </div>
+        </div>
+    </div>
+    
     <!-- Modals -->
     <!-- Save Watchlist Modal -->
     <div class="modal fade" id="saveWatchlistModal" tabindex="-1" aria-hidden="true">
@@ -105,7 +198,7 @@
                 </div>
                 <div class="modal-body">
                     <div class="mb-3">
-                        <label for="watchlistNameInput" class="form-label">Name functionality for likely groups (e.g. 'Banking', 'My Portfolio')</label>
+                        <label for="watchlistNameInput" class="form-label">Name for this watchlist (e.g. 'Banking', 'My Portfolio')</label>
                         <input type="text" class="form-control" id="watchlistNameInput" placeholder="Enter name...">
                     </div>
                 </div>
@@ -135,6 +228,7 @@
             </div>
         </div>
     </div>
+    
     <!-- Load Options Modal -->
     <div class="modal fade" id="loadOptionsModal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog">
@@ -154,11 +248,75 @@
             </div>
         </div>
     </div>
+
+    <!-- Reconnect Modal -->
+    <div class="modal fade" id="reconnectModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Reconnect Stream</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted">Optionally provide new token/cookies before reconnecting.</p>
+                    <div class="mb-3">
+                        <label for="reconnectToken" class="form-label">Bearer Token (optional)</label>
+                        <textarea class="form-control" id="reconnectToken" rows="2" placeholder="Leave empty to use existing token"></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label for="reconnectCookies" class="form-label">Cookies (optional)</label>
+                        <textarea class="form-control" id="reconnectCookies" rows="2" placeholder="Leave empty to use existing cookies"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" onclick="doReconnect()">Reconnect</button>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 
 
-
 <style>
+/* Daemon State Display */
+.daemon-state-display {
+    padding: 12px;
+    background: #f8f9fa;
+    border-radius: 8px;
+    border-left: 4px solid #6c757d;
+}
+
+.daemon-state-display.streaming {
+    border-left-color: #28a745;
+    background: rgba(40,167,69,0.05);
+}
+
+.daemon-state-display.waiting_market,
+.daemon-state-display.market_closed {
+    border-left-color: #ffc107;
+    background: rgba(255,193,7,0.05);
+}
+
+.daemon-state-display.paused {
+    border-left-color: #fd7e14;
+    background: rgba(253,126,20,0.05);
+}
+
+.daemon-state-display.error {
+    border-left-color: #dc3545;
+    background: rgba(220,53,69,0.05);
+}
+
+.daemon-state-display.no_tickers {
+    border-left-color: #6c757d;
+    background: rgba(108,117,125,0.05);
+}
+
+.state-icon {
+    font-size: 1.5rem;
+}
+
 /* Chip Selectors */
 .chip-container {
     display: flex;
@@ -167,7 +325,7 @@
     padding: 8px;
     border: 1px solid #dee2e6;
     border-radius: 4px;
-    min-height: 100px;
+    min-height: 80px;
     background: white;
     cursor: text;
 }
@@ -237,30 +395,35 @@
     margin-right: 4px;
 }
 
-/* Existing Styles */
-.stream-card {
-    border: 1px solid #dee2e6;
+/* Stats */
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 0.75rem;
+}
+
+.stat-item {
+    padding: 0.5rem;
+    background: #f8f9fa;
     border-radius: 0.25rem;
-    padding: 1rem;
-    margin-bottom: 1rem;
-    position: relative;
 }
 
-.stream-card.running {
-    border-left: 4px solid #28a745;
-    background: linear-gradient(90deg, rgba(40,167,69,0.05) 0%, rgba(255,255,255,0) 100%);
+.stat-label {
+    font-size: 0.75rem;
+    color: #6c757d;
+    text-transform: uppercase;
 }
 
-.stream-card.stopped {
-    border-left: 4px solid #dc3545;
-    background: rgba(248,249,250,1);
+.stat-value {
+    font-size: 1.25rem;
+    font-weight: bold;
 }
 
+/* Connection Status */
 .connection-status {
     padding: 0.75rem;
     background: #f8f9fa;
     border-radius: 0.25rem;
-    margin-top: 1rem;
     border-left: 3px solid #6c757d;
 }
 
@@ -284,49 +447,33 @@
     border-left-color: #dc3545;
 }
 
-.ticker-badge {
+.ticker-badge-active {
     display: inline-block;
     background: #e9ecef;
     padding: 0.25rem 0.5rem;
     border-radius: 0.25rem;
     margin: 0.125rem;
     font-size: 0.875rem;
+    font-weight: 500;
 }
 
-.stats-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 1rem;
-    margin-top: 1rem;
-}
-
-.stat-item {
-    padding: 0.5rem;
-    background: #f8f9fa;
-    border-radius: 0.25rem;
-}
-
-.stat-label {
-    font-size: 0.75rem;
-    color: #6c757d;
-    text-transform: uppercase;
-}
-
-.stat-value {
-    font-size: 1.25rem;
-    font-weight: bold;
-}
+/* Modal z-index fix */
+.modal { z-index: 1060 !important; }
+.modal-dialog { z-index: 1070 !important; }
+.modal-backdrop { z-index: 1050 !important; }
 </style>
 
 <script>
 let refreshInterval;
+let countdownInterval;
+let currentDaemonState = null;
 
 // Modal instances
-let saveModal, confirmModal, loadModal;
+let saveModal, confirmModal, loadModal, reconnectModal;
 let pendingConfirmAction = null;
 let pendingLoadItem = null;
 
-// Global Set to track tickers
+// Global Set to track tickers in the input
 let currentTickers = new Set();
 
 // Initialize
@@ -339,202 +486,449 @@ document.addEventListener('DOMContentLoaded', () => {
     saveModal = new bootstrap.Modal(document.getElementById('saveWatchlistModal'));
     confirmModal = new bootstrap.Modal(document.getElementById('confirmActionModal'));
     loadModal = new bootstrap.Modal(document.getElementById('loadOptionsModal'));
+    reconnectModal = new bootstrap.Modal(document.getElementById('reconnectModal'));
     
     // Load Watchlist Modal Listeners
-    const btnReplace = document.getElementById('btnReplace');
-    if (btnReplace) {
-        btnReplace.addEventListener('click', () => {
-            if (pendingLoadItem) {
-                currentTickers.clear();
-                document.querySelectorAll('.chip').forEach(c => c.remove());
-                pendingLoadItem.tickers.forEach(t => addTicker(t));
-            }
-            loadModal.hide();
-        });
-    }
+    document.getElementById('btnReplace').addEventListener('click', () => {
+        if (pendingLoadItem) {
+            currentTickers.clear();
+            document.querySelectorAll('.chip').forEach(c => c.remove());
+            pendingLoadItem.tickers.forEach(t => addTicker(t));
+        }
+        loadModal.hide();
+    });
     
-    const btnAppend = document.getElementById('btnAppend');
-    if (btnAppend) {
-        btnAppend.addEventListener('click', () => {
-            if (pendingLoadItem) {
-                pendingLoadItem.tickers.forEach(t => addTicker(t));
-            }
-            loadModal.hide();
-        });
-    }
+    document.getElementById('btnAppend').addEventListener('click', () => {
+        if (pendingLoadItem) {
+            pendingLoadItem.tickers.forEach(t => addTicker(t));
+        }
+        loadModal.hide();
+    });
     
     // Confirm Button Listener
-    const confirmBtn = document.getElementById('confirmBtn');
-    if (confirmBtn) {
-        confirmBtn.addEventListener('click', () => {
-            if (pendingConfirmAction) pendingConfirmAction();
-            confirmModal.hide();
-        });
-    }
+    document.getElementById('confirmBtn').addEventListener('click', () => {
+        if (pendingConfirmAction) pendingConfirmAction();
+        confirmModal.hide();
+    });
+    
+    // Initial status fetch
+    refreshDaemonStatus();
+    
+    // Auto-refresh every 5 seconds
+    refreshInterval = setInterval(refreshDaemonStatus, 5000);
 });
 
+// ===== DAEMON STATUS =====
 
-// Helper to ensure modals are initialized
-function ensureModalsInitialized() {
-    if (!saveModal) {
-        const saveModalEl = document.getElementById('saveWatchlistModal');
-        if (saveModalEl) saveModal = new bootstrap.Modal(saveModalEl);
-    }
-    if (!confirmModal) {
-        const confirmModalEl = document.getElementById('confirmActionModal');
-        if (confirmModalEl) confirmModal = new bootstrap.Modal(confirmModalEl);
-    }
-    if (!loadModal) {
-        const loadModalEl = document.getElementById('loadOptionsModal');
-        if (loadModalEl) loadModal = new bootstrap.Modal(loadModalEl);
-    }
-}
-
-function showConfirm(message, action) {
-    ensureModalsInitialized();
-    document.getElementById('confirmMessage').innerText = message;
-    pendingConfirmAction = action;
-    confirmModal.show();
-}
-
-// Update saveCurrentAsIndex to use Modal
-function saveCurrentAsIndex() {
-    if (currentTickers.size === 0) {
-        showAlert('Add some tickers first!', 'warning');
-        return;
-    }
-    
-    ensureModalsInitialized();
-    
-    // Set default name
-    const defaultName = `Watchlist (${Array.from(currentTickers).slice(0,3).join(',')})`;
-    document.getElementById('watchlistNameInput').value = defaultName;
-    
-    saveModal.show();
-}
-
-function confirmSaveWatchlist() {
-    const name = document.getElementById('watchlistNameInput').value.trim();
-    if (!name) return;
-    
-    saveModal.hide();
-    
-    const history = JSON.parse(localStorage.getItem('ticker_history') || '[]');
-    
-    // Check for duplicates
-    if (history.some(h => h.name === name)) {
-        showConfirm(`Overwrite existing watchlist "${name}"?`, () => {
-            performSave(name, history);
-        });
-    } else {
-        performSave(name, history);
-    }
-}
-
-function performSave(name, history) {
-    // Remove old one if exists
-    const index = history.findIndex(h => h.name === name);
-    if (index > -1) history.splice(index, 1);
-    
-    history.unshift({
-        name: name,
-        tickers: Array.from(currentTickers),
-        count: currentTickers.size,
-        date: new Date().toISOString()
-    });
-    
-    // limit to 20
-    if (history.length > 20) history.pop();
-    
-    localStorage.setItem('ticker_history', JSON.stringify(history));
-    loadTickerHistory();
-    
-    // Ensure section is visible
-    document.getElementById('history-section').style.display = 'block';
-    
-    showAlert(`Saved watchlist "${name}"!`, 'success');
-}
-
-function deleteHistoryItem(index) {
-    showConfirm('Delete this watchlist?', () => {
-        const history = JSON.parse(localStorage.getItem('ticker_history') || '[]');
-        history.splice(index, 1);
-        localStorage.setItem('ticker_history', JSON.stringify(history));
-        loadTickerHistory();
-    });
-}
-
-function clearTickerHistory() {
-    showConfirm('Clear all saved watchlists?', () => {
-        localStorage.removeItem('ticker_history');
-        loadTickerHistory();
-        showAlert('Watchlists cleared', 'success');
-    });
-}
-
-// start stream
-document.getElementById('startStreamForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    
-    const sessionId = document.getElementById('sessionId').value.trim();
-    const tickers = document.getElementById('tickers').value;
-    const autoReconnect = document.getElementById('autoReconnect').checked;
-    
-    if (!tickers.trim()) {
-        showAlert('Please enter at least one ticker', 'warning');
-        return;
-    }
-    
-    const payload = { 
-        tickers,
-        max_retries: autoReconnect ? null : 0  // null = infinite retries, 0 = no retries
-    };
-    if (sessionId) payload.session_id = sessionId;
-    
+async function refreshDaemonStatus() {
     try {
-        const response = await fetch('/api/orderbook/streams', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        
+        const response = await fetch('/api/orderbook/daemon/status');
         const data = await response.json();
         
         if (data.success) {
-            showAlert(`Stream started: ${data.session_id}. Connecting to WebSocket...`, 'success');
-            document.getElementById('startStreamForm').reset();
-            // Clear current tickers and chips
-            currentTickers.clear();
-            document.querySelectorAll('.chip').forEach(c => c.remove());
-            updateTickersInput();
-            
-            // refresh immediately, then again after 2 seconds to show connection status
-            refreshStreams();
-            setTimeout(refreshStreams, 2000);
-            
-            // Auto-save to history
-            if (currentTickers.size > 0) {
-                saveToRecentRuns(Array.from(currentTickers));
-            }
-        } else {
-            if (data.requires_login) {
-                showAlert('⚠️ ' + (data.error || 'Authentication required') + ' - Please update your token in Settings or use Override', 'warning');
-            } else {
-                showAlert('❌ ' + (data.error || 'Failed to start stream'), 'danger');
-            }
+            currentDaemonState = data;
+            displayDaemonStatus(data);
         }
     } catch (error) {
-        showAlert('Error starting stream: ' + error.message, 'danger');
+        console.error('Error fetching daemon status:', error);
     }
-});
+}
 
+function displayDaemonStatus(data) {
+    const stateDisplay = document.querySelector('.daemon-state-display');
+    const stateIcon = document.getElementById('daemonStateIcon');
+    const stateText = document.getElementById('daemonStateText');
+    const stateDetail = document.getElementById('daemonStateDetail');
+    const stateBadge = document.getElementById('daemonStateBadge');
+    const marketBadge = document.getElementById('marketStatusBadge');
+    const currentTimeEl = document.getElementById('currentTime');
+    const countdownSection = document.getElementById('countdownSection');
+    const btnPauseResume = document.getElementById('btnPauseResume');
+    
+    // Current time
+    if (data.market && data.market.current_time) {
+        const currentDate = new Date(data.market.current_time);
+        currentTimeEl.textContent = currentDate.toLocaleTimeString('en-US', { hour12: false });
+    }
+    
+    // State display
+    const stateConfig = {
+        'streaming': { icon: '🟢', text: 'Streaming', detail: `Watching ${data.tickers.length} tickers`, badge: 'bg-success', badgeText: 'STREAMING' },
+        'waiting_market': { icon: '🟡', text: 'Waiting for Market', detail: 'Stream will start when market opens', badge: 'bg-warning text-dark', badgeText: 'WAITING' },
+        'market_closed': { icon: '🌙', text: 'Market Closed', detail: 'Waiting for next trading session', badge: 'bg-secondary', badgeText: 'CLOSED' },
+        'paused': { icon: '⏸️', text: 'Paused', detail: 'Streaming is paused', badge: 'bg-warning text-dark', badgeText: 'PAUSED' },
+        'error': { icon: '🔴', text: 'Error', detail: 'Stream encountered an error', badge: 'bg-danger', badgeText: 'ERROR' },
+        'no_tickers': { icon: '📋', text: 'No Tickers', detail: 'Add tickers to start watching', badge: 'bg-secondary', badgeText: 'NO TICKERS' },
+    };
+    
+    const state = data.state || 'waiting_market';
+    const config = stateConfig[state] || stateConfig['waiting_market'];
+    
+    stateDisplay.className = 'daemon-state-display mb-3 ' + state;
+    stateIcon.textContent = config.icon;
+    stateText.textContent = config.text;
+    stateDetail.textContent = config.detail;
+    stateBadge.className = `badge ${config.badge}`;
+    stateBadge.textContent = config.badgeText;
+    
+    // Market badge
+    if (data.market) {
+        const marketConfig = {
+            'open': { badge: 'bg-success', text: 'MARKET OPEN' },
+            'break': { badge: 'bg-warning text-dark', text: 'LUNCH BREAK' },
+            'closed': { badge: 'bg-danger', text: 'MARKET CLOSED' },
+        };
+        const mc = marketConfig[data.market.status] || marketConfig['closed'];
+        marketBadge.className = `badge ${mc.badge}`;
+        marketBadge.textContent = mc.text;
+    }
+    
+    // Pause/Resume button
+    if (data.paused) {
+        btnPauseResume.innerHTML = '<i class="bi bi-play-circle"></i> Resume';
+        btnPauseResume.className = 'btn btn-sm btn-success';
+    } else {
+        btnPauseResume.innerHTML = '<i class="bi bi-pause-circle"></i> Pause';
+        btnPauseResume.className = 'btn btn-sm btn-warning';
+    }
+    
+    // Stats
+    if (data.stream) {
+        const msgCounts = data.stream.message_counts || {};
+        document.getElementById('statMessages').textContent = Object.values(msgCounts).reduce((a, b) => a + b, 0);
+        document.getElementById('statActiveTickers').textContent = Object.keys(msgCounts).length;
+        document.getElementById('statUptime').textContent = formatUptime(data.stream.uptime_seconds || 0);
+        document.getElementById('statReconnects').textContent = data.stream.total_reconnects || 0;
+        
+        // Connection status
+        displayConnectionStatus(data.stream);
+    } else {
+        document.getElementById('statMessages').textContent = '0';
+        document.getElementById('statActiveTickers').textContent = data.tickers ? data.tickers.length : 0;
+        document.getElementById('statUptime').textContent = '--';
+        document.getElementById('statReconnects').textContent = data.total_reconnects_today || 0;
+        document.getElementById('connectionStatus').style.display = 'none';
+    }
+    
+    // Active tickers display
+    displayActiveTickers(data.tickers || []);
+    
+    // Countdown
+    if (data.market && data.market.time_until_next > 0 && data.market.status !== 'open') {
+        setupCountdown(data.market);
+    } else {
+        countdownSection.style.display = 'none';
+    }
+    
+    // Stream details
+    displayStreamDetails(data);
+    
+    // Telegram status
+    displayTelegramStatus();
+}
 
-// --- Chip Input Logic ---
+function displayActiveTickers(tickers) {
+    const container = document.getElementById('activeTickerBadges');
+    const badge = document.getElementById('tickerCountBadge');
+    
+    badge.textContent = `${tickers.length} ticker${tickers.length !== 1 ? 's' : ''}`;
+    
+    if (tickers.length === 0) {
+        container.innerHTML = '<span class="text-muted">No tickers configured — add some below</span>';
+    } else {
+        container.innerHTML = tickers.map(t => 
+            `<span class="ticker-badge-active">${t}</span>`
+        ).join('');
+    }
+}
+
+function displayConnectionStatus(stream) {
+    const el = document.getElementById('connectionStatus');
+    const status = stream.connection_status || 'unknown';
+    
+    el.style.display = 'block';
+    
+    let statusClass = '';
+    let icon = 'circle';
+    let message = status;
+    
+    if (status === 'connected') {
+        statusClass = 'connected';
+        icon = 'check-circle-fill';
+        message = 'Connected';
+    } else if (status === 'connecting') {
+        statusClass = 'connecting';
+        icon = 'arrow-repeat';
+        message = 'Connecting...';
+    } else if (status.startsWith('retrying')) {
+        statusClass = 'retrying';
+        icon = 'arrow-clockwise';
+        message = `Reconnecting ${status}`;
+    } else if (status === 'error') {
+        statusClass = 'error';
+        icon = 'exclamation-triangle-fill';
+        message = 'Connection Error';
+    }
+    
+    el.className = `connection-status mt-3 ${statusClass}`;
+    document.getElementById('connIcon').className = `bi bi-${icon} me-2`;
+    document.getElementById('connText').textContent = message;
+    
+    const retryBadge = document.getElementById('connRetryBadge');
+    if (stream.retry_count > 0) {
+        retryBadge.style.display = 'inline';
+        retryBadge.textContent = `Retry #${stream.retry_count}`;
+    } else {
+        retryBadge.style.display = 'none';
+    }
+    
+    const errEl = document.getElementById('connError');
+    if (stream.last_error) {
+        errEl.style.display = 'block';
+        errEl.innerHTML = `<i class="bi bi-exclamation-circle"></i> ${stream.last_error}`;
+    } else {
+        errEl.style.display = 'none';
+    }
+}
+
+function displayStreamDetails(data) {
+    const container = document.getElementById('streamDetailsContainer');
+    
+    if (!data.stream) {
+        container.innerHTML = `
+            <div class="text-center text-muted py-4">
+                <i class="bi bi-broadcast" style="font-size: 2rem;"></i>
+                <p class="mt-2 mb-0">No active stream</p>
+                <small>${data.state === 'no_tickers' ? 'Add tickers to start watching' : 
+                         data.state === 'paused' ? 'Stream is paused' :
+                         'Stream will start when market opens'}</small>
+            </div>
+        `;
+        return;
+    }
+    
+    const msgCounts = data.stream.message_counts || {};
+    const hasMessages = Object.keys(msgCounts).length > 0;
+    
+    container.innerHTML = `
+        <div class="row">
+            <div class="col-12">
+                ${hasMessages ? `
+                    <h6><i class="bi bi-bar-chart"></i> Messages by Ticker</h6>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Ticker</th>
+                                    <th class="text-end">Messages</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${Object.entries(msgCounts).sort((a,b) => b[1] - a[1]).map(([ticker, count]) => `
+                                    <tr>
+                                        <td><strong>${ticker}</strong></td>
+                                        <td class="text-end">${count.toLocaleString()}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                            <tfoot>
+                                <tr class="table-light">
+                                    <td><strong>Total</strong></td>
+                                    <td class="text-end"><strong>${Object.values(msgCounts).reduce((a,b) => a+b, 0).toLocaleString()}</strong></td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                ` : '<p class="text-muted">Waiting for messages...</p>'}
+                
+                <div class="mt-2 small text-muted">
+                    ${data.stream_started_at ? `Stream started: ${new Date(data.stream_started_at).toLocaleString()}` : ''}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function displayTelegramStatus() {
+    const container = document.getElementById('telegramStatus');
+    // This is a static display since Telegram config comes from env vars
+    container.innerHTML = `
+        <div class="d-flex align-items-center">
+            <i class="bi bi-info-circle text-muted me-2"></i>
+            <div>
+                <span>Set <code>TELEGRAM_BOT_TOKEN</code> and <code>TELEGRAM_CHAT_ID</code> in your <code>.env</code> file to enable Telegram notifications.</span>
+                <br><small class="text-muted">The bot will send daily updates, heartbeat checks, and reconnection alerts.</small>
+            </div>
+        </div>
+    `;
+}
+
+// ===== ACTIONS =====
+
+async function togglePauseResume() {
+    const isPaused = currentDaemonState && currentDaemonState.paused;
+    const url = isPaused ? '/api/orderbook/daemon/resume' : '/api/orderbook/daemon/pause';
+    
+    try {
+        const response = await fetch(url, { method: 'POST' });
+        const data = await response.json();
+        
+        if (data.success) {
+            showAlert(isPaused ? 'Daemon resumed' : 'Daemon paused', 'success');
+            refreshDaemonStatus();
+        } else {
+            showAlert(data.error || 'Action failed', 'danger');
+        }
+    } catch (error) {
+        showAlert('Error: ' + error.message, 'danger');
+    }
+}
+
+function reconnectStream() {
+    reconnectModal.show();
+}
+
+async function doReconnect() {
+    const token = document.getElementById('reconnectToken').value.trim();
+    const cookies = document.getElementById('reconnectCookies').value.trim();
+    
+    reconnectModal.hide();
+    
+    if (token) {
+        // Set token and reconnect
+        try {
+            const response = await fetch('/api/orderbook/daemon/reconnect', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token, cookies })
+            });
+            const data = await response.json();
+            
+            if (data.success) {
+                showAlert(data.message || 'Reconnected successfully', 'success');
+            } else {
+                showAlert(data.error || 'Reconnect failed', 'danger');
+            }
+        } catch (error) {
+            showAlert('Error: ' + error.message, 'danger');
+        }
+    } else {
+        // Just refresh the existing stream
+        try {
+            const streams = await fetch('/api/orderbook/streams').then(r => r.json());
+            if (streams.success && streams.sessions.length > 0) {
+                const sid = streams.sessions[0].session_id;
+                await fetch(`/api/orderbook/streams/${sid}/refresh`, { method: 'POST' });
+                showAlert('Stream refreshed', 'success');
+            } else {
+                // Force resume to trigger reconnect
+                await fetch('/api/orderbook/daemon/resume', { method: 'POST' });
+                showAlert('Daemon resumed', 'success');
+            }
+        } catch (error) {
+            showAlert('Error: ' + error.message, 'danger');
+        }
+    }
+    
+    setTimeout(refreshDaemonStatus, 1000);
+}
+
+async function applyTickers() {
+    const tickers = Array.from(currentTickers);
+    if (tickers.length === 0) {
+        showAlert('Add at least one ticker', 'warning');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/orderbook/daemon/tickers', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tickers, action: 'set' })
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            showAlert(`Watchlist updated: ${tickers.join(', ')}`, 'success');
+            saveToRecentRuns(tickers);
+            refreshDaemonStatus();
+        } else {
+            showAlert(data.error || 'Failed to update tickers', 'danger');
+        }
+    } catch (error) {
+        showAlert('Error: ' + error.message, 'danger');
+    }
+}
+
+function loadCurrentTickers() {
+    if (!currentDaemonState || !currentDaemonState.tickers) return;
+    
+    // Clear existing chips
+    currentTickers.clear();
+    document.querySelectorAll('.chip').forEach(c => c.remove());
+    
+    // Add current daemon tickers
+    currentDaemonState.tickers.forEach(t => addTicker(t));
+    showAlert('Loaded current daemon tickers', 'info');
+}
+
+// ===== COUNTDOWN =====
+
+function setupCountdown(market) {
+    const countdownSection = document.getElementById('countdownSection');
+    const countdownLabel = document.getElementById('countdownLabel');
+    const countdownTime = document.getElementById('countdownTime');
+    const progressBar = document.getElementById('countdownProgress');
+    
+    countdownSection.style.display = 'block';
+    countdownLabel.textContent = market.status === 'break' ? 'Session 2 Opens In:' : 'Next Open In:';
+    
+    if (countdownInterval) clearInterval(countdownInterval);
+    
+    const totalSeconds = market.time_until_next;
+    const startTime = Date.now();
+    
+    countdownInterval = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        const remaining = Math.max(0, totalSeconds - elapsed);
+        
+        if (remaining === 0) {
+            clearInterval(countdownInterval);
+            refreshDaemonStatus();
+            return;
+        }
+        
+        const hours = Math.floor(remaining / 3600);
+        const minutes = Math.floor((remaining % 3600) / 60);
+        const seconds = remaining % 60;
+        
+        if (hours > 0) {
+            countdownTime.textContent = `${hours}h ${minutes}m ${seconds}s`;
+        } else if (minutes > 0) {
+            countdownTime.textContent = `${minutes}m ${seconds}s`;
+        } else {
+            countdownTime.textContent = `${seconds}s`;
+        }
+        
+        const progress = ((totalSeconds - remaining) / totalSeconds) * 100;
+        progressBar.style.width = `${progress}%`;
+        
+        if (remaining < 300) {
+            progressBar.className = 'progress-bar bg-warning';
+        } else if (remaining < 60) {
+            progressBar.className = 'progress-bar bg-danger';
+        } else {
+            progressBar.className = 'progress-bar bg-info';
+        }
+    }, 1000);
+}
+
+// ===== CHIP INPUT =====
+
 function initChipInput() {
     const input = document.getElementById('ticker-input');
     const container = document.querySelector('.chip-container');
     
-    // Focus input when clicking container
     container.addEventListener('click', () => input.focus());
     
     if (input) {
@@ -543,8 +937,7 @@ function initChipInput() {
                 e.preventDefault();
                 const value = input.value.trim().toUpperCase();
                 if (value) {
-                    const parts = value.split(/[\n,]+/);
-                    parts.forEach(part => {
+                    value.split(/[\n,]+/).forEach(part => {
                         const clean = part.trim();
                         if (clean) addTicker(clean);
                     });
@@ -553,8 +946,7 @@ function initChipInput() {
             } else if (e.key === 'Backspace' && input.value === '' && currentTickers.size > 0) {
                 const chips = container.querySelectorAll('.chip');
                 if (chips.length > 0) {
-                    const lastChip = chips[chips.length - 1];
-                    removeTicker(lastChip.dataset.ticker);
+                    removeTicker(chips[chips.length - 1].dataset.ticker);
                 }
             }
         });
@@ -562,8 +954,7 @@ function initChipInput() {
         input.addEventListener('paste', (e) => {
             e.preventDefault();
             const text = (e.clipboardData || window.clipboardData).getData('text');
-            const parts = text.split(/[\n,]+/);
-            parts.forEach(part => {
+            text.split(/[\n,]+/).forEach(part => {
                 const clean = part.trim().toUpperCase();
                 if (clean) addTicker(clean);
             });
@@ -599,13 +990,82 @@ function updateTickersInput() {
     document.getElementById('tickers').value = Array.from(currentTickers).join('\n');
 }
 
-// --- History Logic ---
+// ===== WATCHLIST / HISTORY =====
+
+function saveCurrentAsWatchlist() {
+    if (currentTickers.size === 0) {
+        showAlert('Add some tickers first!', 'warning');
+        return;
+    }
+    
+    const defaultName = `Watchlist (${Array.from(currentTickers).slice(0,3).join(',')})`;
+    document.getElementById('watchlistNameInput').value = defaultName;
+    saveModal.show();
+}
+
+function confirmSaveWatchlist() {
+    const name = document.getElementById('watchlistNameInput').value.trim();
+    if (!name) return;
+    
+    saveModal.hide();
+    
+    const history = JSON.parse(localStorage.getItem('ticker_history') || '[]');
+    
+    if (history.some(h => h.name === name)) {
+        showConfirm(`Overwrite existing watchlist "${name}"?`, () => {
+            performSave(name, history);
+        });
+    } else {
+        performSave(name, history);
+    }
+}
+
+function performSave(name, history) {
+    const index = history.findIndex(h => h.name === name);
+    if (index > -1) history.splice(index, 1);
+    
+    history.unshift({
+        name: name,
+        tickers: Array.from(currentTickers),
+        count: currentTickers.size,
+        date: new Date().toISOString()
+    });
+    
+    if (history.length > 20) history.pop();
+    
+    localStorage.setItem('ticker_history', JSON.stringify(history));
+    loadTickerHistory();
+    document.getElementById('history-section').style.display = 'block';
+    showAlert(`Saved watchlist "${name}"!`, 'success');
+}
+
+function showConfirm(message, action) {
+    document.getElementById('confirmMessage').innerText = message;
+    pendingConfirmAction = action;
+    confirmModal.show();
+}
+
+function deleteHistoryItem(index) {
+    showConfirm('Delete this watchlist?', () => {
+        const history = JSON.parse(localStorage.getItem('ticker_history') || '[]');
+        history.splice(index, 1);
+        localStorage.setItem('ticker_history', JSON.stringify(history));
+        loadTickerHistory();
+    });
+}
+
+function clearTickerHistory() {
+    showConfirm('Clear all saved watchlists?', () => {
+        localStorage.removeItem('ticker_history');
+        loadTickerHistory();
+        showAlert('Watchlists cleared', 'success');
+    });
+}
+
 function loadTickerHistory() {
     const history = JSON.parse(localStorage.getItem('ticker_history') || '[]');
     const container = document.getElementById('history-chips');
     const section = document.getElementById('history-section');
-    
-    // Check if we have any history OR recent runs to show
     const recentRuns = JSON.parse(localStorage.getItem('recent_runs') || '[]');
     
     if (history.length === 0 && recentRuns.length === 0) {
@@ -645,23 +1105,14 @@ function loadRecentRuns() {
 function saveToRecentRuns(tickersArray) {
     let recent = JSON.parse(localStorage.getItem('recent_runs') || '[]');
     
-    // Remove duplicate if exists (check by sorted string content)
     const newSig = tickersArray.slice().sort().join(',');
     recent = recent.filter(r => r.tickers.slice().sort().join(',') !== newSig);
     
-    // Add new to top
-    recent.unshift({
-        tickers: tickersArray,
-        date: new Date().toISOString()
-    });
-    
-    // Keep max 5
+    recent.unshift({ tickers: tickersArray, date: new Date().toISOString() });
     if (recent.length > 5) recent.pop();
     
     localStorage.setItem('recent_runs', JSON.stringify(recent));
     loadRecentRuns();
-    
-    // Ensure history section is visible
     document.getElementById('history-section').style.display = 'block';
 }
 
@@ -675,7 +1126,6 @@ function loadTickerSetFromRecent(index) {
     loadTickerSet(recent[index]);
 }
 
-// Replaces the bad block with just the function
 function loadTickerSet(item) {
     if (item && item.tickers) {
         if (currentTickers.size > 0) {
@@ -687,198 +1137,31 @@ function loadTickerSet(item) {
     }
 }
 
+// ===== UTILITIES =====
 
-
-// load and display streams
-async function refreshStreams() {
-    try {
-        const response = await fetch('/api/orderbook/streams');
-        const data = await response.json();
-        
-        if (data.success) {
-            displayStreams(data.sessions);
-        }
-    } catch (error) {
-        console.error('Error loading streams:', error);
-    }
-}
-
-// display streams in UI
-function displayStreams(sessions) {
-    const container = document.getElementById('streamsContainer');
-    
-    if (sessions.length === 0) {
-        container.innerHTML = '<p class="text-muted">No active streams</p>';
-        return;
-    }
-    
-    container.innerHTML = sessions.map(session => `
-        <div class="stream-card ${session.status}">
-            <div class="d-flex justify-content-between align-items-start">
-                <div class="flex-grow-1">
-                    <h6 class="mb-2">
-                        <span class="badge bg-${session.status === 'running' ? 'success' : 'secondary'}">
-                            ${session.status.toUpperCase()}
-                        </span>
-                        ${session.session_id}
-                    </h6>
-                    
-                    <div class="mb-2">
-                        <strong>Tickers:</strong>
-                        ${session.tickers.map(t => `<span class="ticker-badge">${t}</span>`).join('')}
-                    </div>
-                    
-                    <div class="stats-grid">
-                        <div class="stat-item">
-                            <div class="stat-label">Uptime</div>
-                            <div class="stat-value">${formatUptime(session.uptime_seconds)}</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-label">Total Messages</div>
-                            <div class="stat-value">${Object.values(session.message_counts || {}).reduce((a, b) => a + b, 0)}</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-label">Active Tickers</div>
-                            <div class="stat-value">${Object.keys(session.message_counts || {}).length}</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-label">Reconnects</div>
-                            <div class="stat-value">${session.total_reconnects || 0}</div>
-                        </div>
-                    </div>
-                    
-                    <!-- Connection Status -->
-                    ${session.running ? renderConnectionStatus(session) : ''}
-                    
-                    ${session.message_counts && Object.keys(session.message_counts).length > 0 ? `
-                        <details class="mt-3">
-                            <summary style="cursor: pointer;">Message counts by ticker</summary>
-                            <div class="mt-2">
-                                ${Object.entries(session.message_counts).map(([ticker, count]) => 
-                                    `<div class="d-flex justify-content-between" style="font-size: 0.875rem;">
-                                        <span>${ticker}:</span>
-                                        <strong>${count}</strong>
-                                    </div>`
-                                ).join('')}
-                            </div>
-                        </details>
-                    ` : ''}
-                    
-                    <div class="mt-2" style="font-size: 0.875rem; color: #6c757d;">
-                        Started: ${new Date(session.started_at).toLocaleString()}
-                        ${session.stopped_at ? `<br>Stopped: ${new Date(session.stopped_at).toLocaleString()}` : ''}
-                        ${session.last_disconnect_time ? `<br>Last Disconnect: ${new Date(session.last_disconnect_time).toLocaleString()}` : ''}
-                    </div>
-                </div>
-                
-                <div>
-                    ${session.status === 'running' ? `
-                        <button class="btn btn-sm btn-danger" onclick="stopStream('${session.session_id}')">
-                            <i class="bi bi-stop-circle"></i> Stop
-                        </button>
-                    ` : ''}
-                </div>
-            </div>
-        </div>
-    `).join('');
-}
-
-// stop a stream
-async function stopStream(sessionId) {
-    if (!confirm(`Stop stream ${sessionId}?`)) return;
-    
-    try {
-        const response = await fetch(`/api/orderbook/streams/${sessionId}/stop`, {
-            method: 'POST'
-        });
-        
-        const data = await response.json();
-        
-        if (data.success) {
-            showAlert(`Stream ${sessionId} stopped`, 'info');
-            refreshStreams();
-        } else {
-            showAlert(data.error || 'Failed to stop stream', 'danger');
-        }
-    } catch (error) {
-        showAlert('Error stopping stream: ' + error.message, 'danger');
-    }
-}
-
-// render connection status with details
-function renderConnectionStatus(session) {
-    const status = session.connection_status || 'unknown';
-    let statusClass = '';
-    let icon = 'circle';
-    let message = status;
-    
-    if (status === 'connected') {
-        statusClass = 'connected';
-        icon = 'check-circle-fill';
-        message = 'Connected';
-    } else if (status === 'connecting') {
-        statusClass = 'connecting';
-        icon = 'arrow-repeat';
-        message = 'Connecting...';
-    } else if (status.startsWith('retrying')) {
-        statusClass = 'retrying';
-        icon = 'arrow-clockwise';
-        message = `Reconnecting ${status}`;
-    } else if (status === 'error') {
-        statusClass = 'error';
-        icon = 'exclamation-triangle-fill';
-        message = 'Connection Error';
-    }
-    
-    return `
-        <div class="connection-status ${statusClass}">
-            <div class="d-flex align-items-center justify-content-between">
-                <div>
-                    <i class="bi bi-${icon}"></i>
-                    <strong>${message}</strong>
-                    ${session.retry_count > 0 ? `<span class="ms-2 badge bg-warning text-dark">Retry #${session.retry_count}</span>` : ''}
-                </div>
-            </div>
-            ${session.last_error ? `
-                <div class="mt-2 text-danger" style="font-size: 0.875rem;">
-                    <i class="bi bi-exclamation-circle"></i> ${session.last_error}
-                </div>
-            ` : ''}
-        </div>
-    `;
-}
-
-// format uptime in human readable format
 function formatUptime(seconds) {
-    if (seconds < 60) return `${Math.floor(seconds)}s`;
+    if (!seconds || seconds < 60) return `${Math.floor(seconds || 0)}s`;
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
     const hours = Math.floor(seconds / 3600);
     const mins = Math.floor((seconds % 3600) / 60);
     return `${hours}h ${mins}m`;
 }
 
-// show alert message
 function showAlert(message, type) {
     const alert = document.getElementById('statusAlert');
     alert.className = `alert alert-${type}`;
     alert.textContent = message;
     alert.classList.remove('d-none');
     
-    // auto-hide after 5 seconds for success/info, keep warnings/errors visible
     if (type === 'success' || type === 'info') {
-        setTimeout(() => {
-            alert.classList.add('d-none');
-        }, 5000);
+        setTimeout(() => alert.classList.add('d-none'), 5000);
     }
 }
 
-// initial load and auto-refresh
-refreshStreams();
-refreshInterval = setInterval(refreshStreams, 5000);
-
-// cleanup on page unload
+// Cleanup on page unload
 window.addEventListener('beforeunload', () => {
     clearInterval(refreshInterval);
+    if (countdownInterval) clearInterval(countdownInterval);
 });
 </script>
 {% endblock %}

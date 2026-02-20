@@ -3,6 +3,11 @@ Configuration for Stockbit Running Trade Scraper
 """
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env file into environment
+load_dotenv()
+
 
 # Base directory
 BASE_DIR = Path(__file__).parent
@@ -29,8 +34,9 @@ STOCKBIT_LOGIN_URL = 'https://stockbit.com/api/login/email'
 STOCKBIT_RUNNING_TRADE_URL = f'{STOCKBIT_API_BASE}/order-trade/running-trade'
 STOCKBIT_WEBSOCKET_URL = 'wss://wss-jkt.trading.stockbit.com/ws'
 
-# reCAPTCHA config (for login)
-RECAPTCHA_SITE_KEY = '6LcOuysTAAAAAHTjFuqhA-egan4CL9BieDa9z5B_'  # this might be visible in page source
+# reCAPTCHA config (for login) — Stockbit uses v3 (score-based, invisible)
+# Verified from login JS bundle: reCaptchaKey:"6LeBXZYqAAAAAIAqBYdAV5HuBc6i0YeVziSYrXAZ"
+RECAPTCHA_SITE_KEY = '6LeBXZYqAAAAAIAqBYdAV5HuBc6i0YeVziSYrXAZ'
 RECAPTCHA_VERSION = 'RECAPTCHA_VERSION_3'
 
 # Request headers template
@@ -86,3 +92,22 @@ CSV_COLUMNS = [
 # Credentials file (encrypted would be better but this works for class project)
 CREDENTIALS_FILE = CONFIG_DIR / 'credentials.json'
 
+# Orderbook daemon watchlist
+ORDERBOOK_WATCHLIST_FILE = CONFIG_DIR / 'orderbook_watchlist.json'
+
+# Telegram bot settings (set via environment variables or .env file)
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
+TELEGRAM_HEARTBEAT_MINUTES = int(os.environ.get('TELEGRAM_HEARTBEAT_MINUTES', '15'))
+
+# 2Captcha settings (for reCAPTCHA v3 solving during auto-login)
+TWOCAPTCHA_API_KEY = os.environ.get('TWOCAPTCHA_API_KEY', '')
+
+# Google Drive upload settings (service account)
+GDRIVE_SERVICE_ACCOUNT_FILE = os.environ.get(
+    'GDRIVE_SERVICE_ACCOUNT_FILE', str(CONFIG_DIR / 'gdrive-service-account.json')
+)
+GDRIVE_FOLDER_ID = os.environ.get('GDRIVE_FOLDER_ID', '')
+GDRIVE_DELETE_AFTER_UPLOAD = os.environ.get(
+    'GDRIVE_DELETE_AFTER_UPLOAD', 'false'
+).lower() == 'true'

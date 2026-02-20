@@ -61,6 +61,99 @@
         </div>
     </div>
 
+    <!-- Auto Login -->
+    <div class="card mb-4 shadow-sm" id="auto-login-card">
+        <div class="card-header bg-success text-white">
+            <div class="d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-robot"></i> Auto Login</h5>
+                <span class="badge bg-light text-dark" id="auto-login-badge">Ready</span>
+            </div>
+        </div>
+        <div class="card-body">
+            <p class="text-muted mb-3">
+                Solves reCAPTCHA v3 via 2Captcha API, then POSTs to Stockbit login endpoint.
+                No browser needed — pure server-side HTTP calls (~30s).
+                <br><small id="captcha-key-status"><i class="bi bi-hourglass-split"></i> Checking 2Captcha API key...</small>
+            </p>
+
+            <div id="auto-login-result" style="display:none;" class="mb-3"></div>
+
+            <div class="row g-2 mb-3">
+                <div class="col-md-5">
+                    <input type="email" class="form-control" id="auto-login-email" placeholder="Stockbit email">
+                </div>
+                <div class="col-md-5">
+                    <input type="password" class="form-control" id="auto-login-password" placeholder="Password">
+                </div>
+                <div class="col-md-2 d-grid">
+                    <button class="btn btn-success" id="auto-login-btn" onclick="startAutoLogin()">
+                        <i class="bi bi-play-circle"></i> Login
+                    </button>
+                </div>
+            </div>
+
+            <!-- Progress Log -->
+            <div id="auto-login-progress" style="display:none;">
+                <h6 class="text-muted"><i class="bi bi-terminal"></i> Progress</h6>
+                <div id="auto-login-log" 
+                     class="bg-dark text-success font-monospace p-3 rounded" 
+                     style="max-height: 200px; overflow-y: auto; font-size: 0.85em;">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Telegram Bot Status -->
+    <div class="card mb-4 shadow-sm" id="telegram-status-card">
+        <div class="card-header bg-primary text-white">
+            <div class="d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-telegram"></i> Telegram Bot Status</h5>
+                <span class="badge bg-light text-dark" id="telegram-status-badge">Checking...</span>
+            </div>
+        </div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-6">
+                    <ul class="list-group list-group-flush">
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            Bot Running
+                            <span id="telegram-running">...</span>
+                        </li>
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            Token Configured
+                            <span id="telegram-token">...</span>
+                        </li>
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            Chat ID Configured
+                            <span id="telegram-chat-id">...</span>
+                        </li>
+                    </ul>
+                </div>
+                <div class="col-md-6">
+                    <ul class="list-group list-group-flush">
+                         <li class="list-group-item d-flex justify-content-between align-items-center">
+                            Bot Identity
+                            <span id="telegram-identity">...</span>
+                        </li>
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            Job Queue Active
+                            <span id="telegram-job-queue">...</span>
+                        </li>
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            Last Error
+                            <span id="telegram-error" class="text-danger small text-end" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis;">-</span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="mt-3 d-flex justify-content-end">
+                <button class="btn btn-outline-primary" id="telegram-test-btn" onclick="sendTelegramTest()">
+                    <i class="bi bi-send"></i> Send Test Message
+                </button>
+            </div>
+        </div>
+
     <!-- Manual Update (Hidden by default) -->
     <div class="card mt-4" id="update-credentials-card" style="display: none;">
         <div class="card-header bg-primary text-white">
@@ -174,7 +267,143 @@
 document.addEventListener('DOMContentLoaded', () => {
     checkTokenStatus();
     loadDefaults();
+    checkCaptchaConfig();
 });
+
+function checkCaptchaConfig() {
+    const el = document.getElementById('captcha-key-status');
+    fetch('/api/token/auto-login/config')
+        .then(res => res.json())
+        .then(data => {
+            if (data.has_captcha_key) {
+                el.innerHTML = `<span class="text-success"><i class="bi bi-check-circle-fill"></i> 2Captcha API key loaded (${data.captcha_key_masked})</span>`;
+            } else {
+                el.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle-fill"></i> 2Captcha API key not found — add <code>TWOCAPTCHA_API_KEY</code> to .env</span>`;
+            }
+        })
+        .catch(() => {
+            el.innerHTML = `<span class="text-warning"><i class="bi bi-exclamation-triangle"></i> Could not check 2Captcha config</span>`;
+        });
+}
+
+// ===== Auto Login =====
+let autoLoginPollInterval = null;
+
+function startAutoLogin() {
+    const btn = document.getElementById('auto-login-btn');
+    const badge = document.getElementById('auto-login-badge');
+    const progressDiv = document.getElementById('auto-login-progress');
+    const logDiv = document.getElementById('auto-login-log');
+    const resultDiv = document.getElementById('auto-login-result');
+    const email = document.getElementById('auto-login-email').value.trim();
+    const password = document.getElementById('auto-login-password').value;
+
+    if (!email || !password) {
+        resultDiv.style.display = 'block';
+        resultDiv.innerHTML = '<div class="alert alert-warning">Enter email and password first.</div>';
+        return;
+    }
+
+    // Reset UI
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Running...';
+    badge.textContent = 'Running';
+    badge.className = 'badge bg-warning text-dark';
+    progressDiv.style.display = 'block';
+    logDiv.innerHTML = '';
+    resultDiv.style.display = 'none';
+
+    fetch('/api/token/auto-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.success) {
+            // Start polling for status
+            autoLoginPollInterval = setInterval(pollAutoLoginStatus, 1000);
+        } else {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-play-circle"></i> Login';
+                badge.textContent = 'Error';
+                badge.className = 'badge bg-danger';
+                resultDiv.style.display = 'block';
+                resultDiv.innerHTML = `<div class="alert alert-danger"><i class="bi bi-x-circle"></i> ${data.error}</div>`;
+        }
+    })
+    .catch(err => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-circle"></i> Login';
+        badge.textContent = 'Error';
+        badge.className = 'badge bg-danger';
+        resultDiv.style.display = 'block';
+        resultDiv.innerHTML = `<div class="alert alert-danger"><i class="bi bi-x-circle"></i> Network error: ${err.message}</div>`;
+    });
+}
+
+function pollAutoLoginStatus() {
+    fetch('/api/token/auto-login/status')
+        .then(res => res.json())
+        .then(data => {
+            const logDiv = document.getElementById('auto-login-log');
+            const badge = document.getElementById('auto-login-badge');
+            const btn = document.getElementById('auto-login-btn');
+            const resultDiv = document.getElementById('auto-login-result');
+
+            // Update progress log
+            logDiv.innerHTML = data.progress.map(p => `<div>→ ${p}</div>`).join('');
+            logDiv.scrollTop = logDiv.scrollHeight;
+
+            const statusLabels = {
+                'starting': '🚀 Starting...',
+                'submitting_captcha': '📡 Submitting to 2Captcha v3...',
+                'waiting_captcha_solution': '⏳ Waiting for solver (~30s)...',
+                'captcha_solved': '✅ Captcha Solved!',
+                'posting_login': '📤 Sending Login Request...',
+                'processing_login_response': '📨 Processing Response...',
+                'setting_token': '💾 Saving Token...',
+                'success': '✅ Success',
+                'error': '❌ Error',
+                'idle': 'Ready'
+            };
+            badge.textContent = statusLabels[data.status] || data.status;
+
+            // Check if done
+            if (!data.running && data.result) {
+                clearInterval(autoLoginPollInterval);
+                autoLoginPollInterval = null;
+
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-play-circle"></i> Login';
+
+                if (data.result.success) {
+                    badge.className = 'badge bg-success';
+                    resultDiv.style.display = 'block';
+                    resultDiv.innerHTML = `
+                        <div class="alert alert-success">
+                            <i class="bi bi-check-circle"></i> <strong>Token captured successfully!</strong><br>
+                            Token: ${data.result.token_length} chars<br>
+                            Cookies: ${data.result.has_cookies ? data.result.cookie_length + ' chars' : 'Not captured'}<br>
+                            ${data.result.expires_at ? 'Expires: ' + new Date(data.result.expires_at).toLocaleString() : ''}
+                        </div>`;
+                    // Refresh token status
+                    checkTokenStatus();
+                } else {
+                    badge.className = 'badge bg-danger';
+                    resultDiv.style.display = 'block';
+                    resultDiv.innerHTML = `
+                        <div class="alert alert-danger">
+                            <i class="bi bi-x-circle"></i> <strong>Auto-login failed</strong><br>
+                            ${data.result.error}
+                        </div>`;
+                }
+            }
+        })
+        .catch(err => {
+            console.error('Poll error:', err);
+        });
+}
 
 function checkTokenStatus() {
     fetch('/api/token/status')
@@ -433,6 +662,103 @@ function showNotification(message, type) {
         notification.remove();
     }, 5000);
 }
+</script>
+
+<script>
+// Telegram Bot Functions
+function checkTelegramStatus() {
+    fetch('/api/telegram/status')
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                updateTelegramUI(data);
+            }
+        })
+        .catch(err => console.error('Failed to check telegram status', err));
+}
+
+function updateTelegramUI(data) {
+    const badge = document.getElementById('telegram-status-badge');
+    const btn = document.getElementById('telegram-test-btn');
+    
+    // Running status
+    const runningEl = document.getElementById('telegram-running');
+    if (data.running) {
+        runningEl.innerHTML = '<span class="badge bg-success">Yes</span>';
+        badge.className = 'badge bg-success';
+        badge.textContent = 'Online';
+        btn.disabled = false;
+    } else {
+        runningEl.innerHTML = '<span class="badge bg-danger">No</span>';
+        badge.className = 'badge bg-secondary';
+        badge.textContent = 'Offline';
+        btn.disabled = true;
+    }
+
+    // Config status
+    document.getElementById('telegram-token').innerHTML = data.token_configured ? 
+        '<span class="text-success"><i class="bi bi-check-circle"></i> Configured</span>' : 
+        '<span class="text-danger"><i class="bi bi-x-circle"></i> Missing</span>';
+        
+    document.getElementById('telegram-chat-id').innerHTML = data.chat_id_configured ? 
+        `<span class="text-primary font-monospace small">${data.chat_id}</span>` : 
+        '<span class="text-danger"><i class="bi bi-x-circle"></i> Missing</span>';
+
+    // Bot Identity
+    const identityEl = document.getElementById('telegram-identity');
+    if (data.bot_info) {
+        identityEl.innerHTML = `<a href="https://t.me/${data.bot_info.username}" target="_blank">@${data.bot_info.username}</a>`;
+    } else {
+        identityEl.textContent = '-';
+    }
+    
+    // Job Queue
+    document.getElementById('telegram-job-queue').innerHTML = data.job_queue_available ?
+        '<span class="text-success"><i class="bi bi-check-circle"></i> Active</span>' :
+        '<span class="text-warning" title="Install python-telegram-bot[job-queue]"><i class="bi bi-exclamation-triangle"></i> Inactive</span>';
+
+    // Error
+    const errorEl = document.getElementById('telegram-error');
+    if (data.last_error) {
+        errorEl.textContent = data.last_error;
+        errorEl.title = data.last_error;
+    } else {
+        errorEl.textContent = 'None';
+    }
+}
+
+function sendTelegramTest() {
+    const btn = document.getElementById('telegram-test-btn');
+    const originalText = btn.innerHTML;
+    
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Sending...';
+    
+    fetch('/api/telegram/test', { method: 'POST' })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                showNotification('Test message sent successfully!', 'success');
+            } else {
+                showNotification('Failed to send message: ' + (data.error || 'Unknown error'), 'error');
+                checkTelegramStatus(); // Refresh status to show error
+            }
+        })
+        .catch(err => {
+            showNotification('Network error: ' + err.message, 'error');
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        });
+}
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    checkTelegramStatus();
+    // Refresh status every 30 seconds
+    setInterval(checkTelegramStatus, 30000);
+});
 </script>
 
 {% endblock %}
