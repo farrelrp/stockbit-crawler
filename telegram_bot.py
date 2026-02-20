@@ -763,11 +763,18 @@ class TelegramBot:
     # ================================================================== #
 
     async def _job_heartbeat(self, context: ContextTypes.DEFAULT_TYPE):
+        """Only send automatic heartbeats when the market is open or
+        opening within the next hour. Silent otherwise."""
         if not self._is_active_instance():
             return
         try:
-            now = datetime.now()
-            if dt_time(8, 30) <= now.time() <= dt_time(16, 30):
+            status = self.daemon.get_status()
+            market = status.get('market', {})
+            is_open = market.get('is_open', False)
+            secs_until_next = market.get('time_until_next', 99999)
+
+            # fire if market is currently open, or next open is < 1 hour away
+            if is_open or secs_until_next <= 3600:
                 await self._send_heartbeat(self.chat_id)
         except Exception as e:
             logger.error(f"Heartbeat job error: {e}")
