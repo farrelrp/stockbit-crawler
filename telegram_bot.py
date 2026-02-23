@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+from tz import now_wib
 
 logger = logging.getLogger(__name__)
 
@@ -287,7 +288,7 @@ class TelegramBot:
                     f"*Test Message*\n\n"
                     f"Bot @{bot_name} is connected!\n"
                     f"Chat ID: `{self.chat_id}`\n"
-                    f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    f"Time: {now_wib().strftime('%Y-%m-%d %H:%M:%S')} WIB"
                 ),
                 parse_mode="Markdown"
             )
@@ -818,7 +819,7 @@ class TelegramBot:
         if not self._is_active_instance():
             return
         try:
-            now = datetime.now()
+            now = now_wib()
             if now.weekday() >= 5:
                 return
 
@@ -844,7 +845,7 @@ class TelegramBot:
 
     async def _send_daily_recap(self):
         try:
-            today = datetime.now().date()
+            today = now_wib().date()
             if self._recap_sent_date == today:
                 return
 

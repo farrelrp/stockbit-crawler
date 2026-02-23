@@ -11,6 +11,7 @@ from typing import List, Optional, Dict, Set
 import csv
 from collections import defaultdict
 from config import STOCKBIT_WEBSOCKET_URL, ORDERBOOK_DIR
+from tz import now_wib, today_wib
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +230,7 @@ class OrderbookCSVStorage:
     
     def _get_or_create_writer(self, ticker: str) -> tuple:
         """Get CSV writer for ticker, create new file if date changed"""
-        current_date = date.today()
+        current_date = today_wib()
         
         # check if we already have an open file for this ticker
         if ticker in self.file_handles:
@@ -422,7 +423,7 @@ class OrderbookStreamer:
         # Don't wait for immediate response - let the receive loop handle it
         logger.info("Subscription sent, waiting for data in receive loop...")
         
-        self.connection_time = datetime.now()
+        self.connection_time = now_wib()
         logger.info("Connection established and ready to receive data")
     
     async def handle_message(self, raw_data: bytes):
@@ -450,8 +451,8 @@ class OrderbookStreamer:
                 logger.warning(f"No orderbook data in field 2 for {ticker}")
                 return
             
-            # timestamps (field 5 and 9)
-            timestamp = fields.get(5) or fields.get(9) or datetime.now().isoformat()
+            # timestamps (field 5 and 9), fall back to WIB if not in the message
+            timestamp = fields.get(5) or fields.get(9) or now_wib().isoformat()
             
             logger.info(f"[DATA] {ticker}: Processing orderbook data ({len(orderbook_raw)} chars)")
             
@@ -460,7 +461,7 @@ class OrderbookStreamer:
             
             # update stats
             self.message_count[ticker] += 1
-            self.last_update[ticker] = datetime.now()
+            self.last_update[ticker] = now_wib()
             
         except Exception as e:
             logger.error(f"[ERROR] Error handling orderbook message: {e}", exc_info=True)
@@ -528,12 +529,12 @@ class OrderbookStreamer:
         """Main loop to receive and process messages"""
         logger.info("[RECEIVE] Starting receive loop...")
         message_counter = 0
-        last_message_time = datetime.now()
+        last_message_time = now_wib()
         
         try:
             async for message in self.websocket:
                 message_counter += 1
-                last_message_time = datetime.now()
+                last_message_time = now_wib()
                 
                 if isinstance(message, bytes):
                     # Log first bytes to see message type
@@ -543,7 +544,7 @@ class OrderbookStreamer:
                     logger.info(f"[MSG] Received text message #{message_counter}: {message}")
                     
         except websockets.exceptions.ConnectionClosed as e:
-            time_since_last = (datetime.now() - last_message_time).total_seconds()
+            time_since_last = (now_wib() - last_message_time).total_seconds()
             if message_counter == 0:
                 logger.error(f"[ERROR] Connection closed without receiving any data! code={e.code}")
             else:
@@ -596,12 +597,12 @@ class OrderbookStreamer:
                 
                 # if we got here, connection was lost - log and retry
                 logger.warning(f"[DISCONNECT] Connection lost, will retry...")
-                self.last_disconnect_time = datetime.now()
+                self.last_disconnect_time = now_wib()
                 self.retry_count += 1
                 
             except Exception as e:
                 self.last_error = str(e)
-                self.last_disconnect_time = datetime.now()
+                self.last_disconnect_time = now_wib()
                 logger.error(f"[ERROR] Orderbook streamer error: {e}", exc_info=True)
                 self.retry_count += 1
                 
@@ -649,7 +650,7 @@ class OrderbookStreamer:
                 for ticker, ts in self.last_update.items()
             },
             'connection_time': self.connection_time.isoformat() if self.connection_time else None,
-            'uptime_seconds': (datetime.now() - self.connection_time).total_seconds() 
+            'uptime_seconds': (now_wib() - self.connection_time).total_seconds() 
                 if self.connection_time else 0,
             'retry_count': self.retry_count,
             'total_reconnects': self.total_reconnects,

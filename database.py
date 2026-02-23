@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional
 from pathlib import Path
 from datetime import datetime, timedelta
 from config import CONFIG_DIR
+from tz import now_wib
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +94,8 @@ class JobDatabase:
                     job_data.get('delay_seconds', 3.0),
                     job_data.get('limit', 50),
                     job_data.get('status', 'QUEUED'),
-                    job_data.get('created_at', datetime.now().isoformat()),
-                    datetime.now().isoformat(),
+                    job_data.get('created_at', now_wib().isoformat()),
+                    now_wib().isoformat(),
                     job_data.get('total_tasks', 0),
                     job_data.get('completed_tasks', 0),
                     job_data.get('failed_tasks', 0),
@@ -215,7 +216,7 @@ class JobDatabase:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+                cutoff = (now_wib() - timedelta(days=days)).isoformat()
                 
                 cursor.execute('''
                     DELETE FROM jobs 

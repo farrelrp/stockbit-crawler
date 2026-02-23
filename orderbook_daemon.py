@@ -14,6 +14,7 @@ from pathlib import Path
 from enum import Enum
 
 from orderbook_streamer import OrderbookStreamer
+from tz import now_wib
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ class OrderbookDaemon:
             data = {
                 'tickers': self.tickers,
                 'daily_stats': self.daily_stats,
-                'updated_at': datetime.now().isoformat()
+                'updated_at': now_wib().isoformat()
             }
             with open(self.watchlist_file, 'w') as f:
                 json.dump(data, f, indent=2)
@@ -229,7 +230,7 @@ class OrderbookDaemon:
             )
 
             asyncio.run_coroutine_threadsafe(self.streamer.run(), self.loop)
-            self.stream_started_at = datetime.now()
+            self.stream_started_at = now_wib()
             self._last_reconnect_count = 0
             self._set_state(DaemonState.STREAMING)
             logger.info(f"Daemon started streaming: {self.tickers}")
@@ -279,13 +280,13 @@ class OrderbookDaemon:
         """Save current stream stats for daily recap"""
         if self.streamer:
             stats = self.streamer.get_stats()
-            today = datetime.now().strftime('%Y-%m-%d')
+            today = now_wib().strftime('%Y-%m-%d')
             self.daily_stats[today] = {
                 'message_counts': stats.get('message_counts', {}),
                 'total_reconnects': stats.get('total_reconnects', 0),
                 'uptime_seconds': stats.get('uptime_seconds', 0),
                 'tickers': self.tickers.copy(),
-                'saved_at': datetime.now().isoformat()
+                'saved_at': now_wib().isoformat()
             }
             self._save_watchlist()
 
@@ -293,7 +294,7 @@ class OrderbookDaemon:
         """Update daemon state with timestamp"""
         old_state = self.state
         self.state = new_state
-        self.last_state_change = datetime.now()
+        self.last_state_change = now_wib()
         if old_state != new_state:
             logger.info(f"Daemon state: {old_state.value} → {new_state.value}")
             if self._on_state_change:
@@ -394,7 +395,7 @@ class OrderbookDaemon:
             return
 
         self.running = True
-        self.started_at = datetime.now()
+        self.started_at = now_wib()
 
         market = self._get_market_status()
         if not self.tickers:
@@ -596,7 +597,7 @@ class OrderbookDaemon:
 
     def get_daily_recap(self) -> Dict:
         """Get recap for today's trading"""
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = now_wib().strftime('%Y-%m-%d')
 
         # Current stream stats
         current_stats = {}

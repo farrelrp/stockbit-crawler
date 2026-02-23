@@ -11,6 +11,7 @@ from dataclasses import dataclass, asdict, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
 from database import JobDatabase
+from tz import now_wib
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ class Job:
     limit: int
     parallel_workers: int = 1  # number of stocks to process in parallel
     status: JobStatus = JobStatus.QUEUED
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    created_at: str = field(default_factory=lambda: now_wib().isoformat())
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     tasks: List[Task] = field(default_factory=list)
@@ -324,7 +325,7 @@ class JobManager:
     def _process_job(self, job: Job):
         """Process all tasks in a job with optional parallelism"""
         job.status = JobStatus.RUNNING
-        job.started_at = datetime.now().isoformat()
+        job.started_at = now_wib().isoformat()
         self.current_job_id = job.job_id
         self._last_milestone = 0  # track progress milestones per job
         
@@ -399,7 +400,7 @@ class JobManager:
             
             # job completed
             job.status = JobStatus.COMPLETED
-            job.completed_at = datetime.now().isoformat()
+            job.completed_at = now_wib().isoformat()
             self._persist_job(job)
             logger.info(f"[OK] Job {job.job_id} completed")
 
