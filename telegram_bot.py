@@ -7,7 +7,7 @@ import os
 import threading
 import logging
 import uuid
-from datetime import datetime, time as dt_time, timedelta
+from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -105,6 +105,9 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("recap", self._cmd_recap))
         self.app.add_handler(CommandHandler("heartbeat", self._cmd_heartbeat))
         self.app.add_handler(CommandHandler("setheartbeat", self._cmd_set_heartbeat))
+
+        # -- google drive commands --
+        self.app.add_handler(CommandHandler("upload", self._cmd_upload))
 
         # -- historical trade job commands --
         self.app.add_handler(CommandHandler("jobs", self._cmd_jobs))
@@ -335,6 +338,9 @@ class TelegramBot:
             "/resume - Resume streaming\n\n"
             "*Authentication*\n"
             "/settoken <token> - Set bearer token\n\n"
+            "*Google Drive*\n"
+            "/upload - Upload today's files to Drive\n"
+            "/upload 2026-02-04 - Upload specific date\n\n"
             "*Historical Trade Jobs*\n"
             "/jobs - List recent jobs\n"
             "/newjob BBCA,TLKM 2026-01-01 2026-01-31 - Create job\n"
@@ -897,24 +903,51 @@ class TelegramBot:
 
     # ---- Google Drive scheduled uploads ----
 
+    @staticmethod
+    def _now_wib() -> datetime:
+        """Get current time in WIB (UTC+7) regardless of server timezone."""
+        return datetime.now(timezone(timedelta(hours=7)))
+
     async def _job_gdrive_post_market(self, context: ContextTypes.DEFAULT_TYPE):
         """16:15 WIB — upload today's orderbook files to Drive."""
         if not self._is_active_instance():
             return
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = self._now_wib().strftime('%Y-%m-%d')
         await self._run_gdrive_upload(today)
 
     async def _job_gdrive_midnight(self, context: ContextTypes.DEFAULT_TYPE):
         """00:05 WIB — catch-all re-upload for yesterday's files."""
         if not self._is_active_instance():
             return
-        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        yesterday = (self._now_wib() - timedelta(days=1)).strftime('%Y-%m-%d')
         await self._run_gdrive_upload(yesterday)
 
-    async def _run_gdrive_upload(self, date_str: str):
-        """Run the actual upload and send a Telegram summary."""
-        if not self.gdrive_uploader or not self.orderbook_dir:
-            logger.debug("GDrive uploader or orderbook_dir not configured, skipping upload")
+    async def _cmd_upload(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/upload [YYYY-MM-DD] — manually trigger Google Drive upload."""
+        if not self.gdrive_uploader:
+            await update.message.reply_text(
+                "Google Drive uploader is not configured.\n"
+                "Check GDRIVE_SERVICE_ACCOUNT_FILE and GDRIVE_FOLDER_ID in .env"
+            )
+            return
+
+        # optional date arg, defaults to today WIB
+        date_str = self._now_wib().strftime('%Y-%m-%d')
+        if context.args:
+            date_str = context.args[0].strip()
+
+        await update.message.reply_text(f"Uploading orderbook files for {date_str}...")
+        await self._run_gdrive_upload(date_str, notify_chat_id=update.effective_chat.id)
+
+    async def _run_gdrive_upload(self, date_str: str, notify_chat_id: str = None):
+        """Run the actual upload and send a Telegram summary with Drive links."""
+        target_chat = notify_chat_id or self.chat_id
+
+        if not self.gdrive_uploader:
+            logger.warning("GDrive uploader is None — was it initialised? Check startup logs for errors")
+            return
+        if not self.orderbook_dir:
+            logger.warning("orderbook_dir not set, skipping GDrive upload")
             return
 
         try:
@@ -926,35 +959,58 @@ class TelegramBot:
             size_mb = total_bytes / (1024 * 1024)
 
             if uploaded == 0 and failed == 0 and skipped == 0:
-                logger.info(f"GDrive: no files to upload for {date_str}")
+                msg = result.get('message', f'No orderbook files found for {date_str}')
+                logger.info(f"GDrive: {msg}")
+                await self.app.bot.send_message(
+                    chat_id=target_chat,
+                    text=f"No orderbook files to upload for {date_str}",
+                )
                 return
 
+            # build the notification text
             if result['success']:
                 text = (
-                    f"*Upload Complete*\n\n"
-                    f"Date: {date_str}\n"
+                    f"*Google Drive Upload Complete*\n\n"
+                    f"Date: `{date_str}`\n"
                     f"Uploaded: {uploaded}  |  Skipped: {skipped}  |  Failed: {failed}\n"
                     f"Size: {size_mb:.1f} MB\n"
                 )
             else:
                 text = (
-                    f"*Upload Partial Failure*\n\n"
-                    f"Date: {date_str}\n"
+                    f"*Google Drive Upload — Partial Failure*\n\n"
+                    f"Date: `{date_str}`\n"
                     f"Uploaded: {uploaded}  |  Failed: {failed}\n"
                 )
                 for r in result.get('results', []):
                     if not r.get('success') and not r.get('skipped'):
                         text += f"  {r['file']}: {r.get('error', '?')}\n"
 
+            # append the date-folder link so user can open in browser
+            subfolder_id = result.get('subfolder_id')
+            if subfolder_id:
+                folder_url = f"https://drive.google.com/drive/folders/{subfolder_id}"
+                text += f"\n[Open folder in Drive]({folder_url})\n"
+
+            # list individual file links
+            file_links = []
+            for r in result.get('results', []):
+                link = r.get('link')
+                name = r.get('file', '?')
+                if link and not r.get('skipped'):
+                    file_links.append(f"  [{name}]({link})")
+            if file_links:
+                text += "\n*Files:*\n" + "\n".join(file_links) + "\n"
+
             await self.app.bot.send_message(
-                chat_id=self.chat_id, text=text, parse_mode="Markdown"
+                chat_id=target_chat, text=text,
+                parse_mode="Markdown", disable_web_page_preview=True,
             )
         except Exception as e:
             logger.error(f"GDrive upload job error for {date_str}: {e}", exc_info=True)
             try:
                 await self.app.bot.send_message(
-                    chat_id=self.chat_id,
-                    text=f"*Upload Failed*\n\nDate: {date_str}\nError: {e}",
+                    chat_id=target_chat,
+                    text=f"*Upload Failed*\n\nDate: {date_str}\nError: `{e}`",
                     parse_mode="Markdown"
                 )
             except Exception:

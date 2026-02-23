@@ -100,8 +100,13 @@ def main():
                 logger.info("Google Drive uploader initialised")
             else:
                 logger.warning(f"Service account file not found: {sa_path}")
-    except (ImportError, AttributeError) as e:
-        logger.info(f"Google Drive upload disabled: {e}")
+        else:
+            logger.warning(
+                f"GDrive not configured: SERVICE_ACCOUNT_FILE={'set' if GDRIVE_SERVICE_ACCOUNT_FILE else 'MISSING'}, "
+                f"FOLDER_ID={'set' if GDRIVE_FOLDER_ID else 'MISSING'}"
+            )
+    except Exception as e:
+        logger.warning(f"Google Drive upload disabled: {e}", exc_info=True)
 
     # -- optional Telegram bot --
     telegram_bot = None

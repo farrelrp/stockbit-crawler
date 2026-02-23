@@ -20,7 +20,7 @@ class SafeRotatingFileHandler(RotatingFileHandler):
             # On Windows, another thread may be holding the file open.
             # Skip this rotation attempt; it will succeed on the next one.
             pass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import json
 import time
@@ -40,8 +40,9 @@ from orderbook_daemon import OrderbookDaemon
 from perspective_server import start_perspective_server, get_perspective_server
 from replay_engine import get_replay_engine
 
-# Module-level globals for Telegram bot (set in __main__)
+# Module-level globals (set in __main__)
 telegram_bot_instance = None
+gdrive_uploader = None
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -680,6 +681,41 @@ def api_orderbook_daemon_recap():
         logger.error(f"Error getting daemon recap: {e}", exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
 
+# --- Google Drive Upload ---
+
+@app.route('/api/gdrive/status', methods=['GET'])
+def api_gdrive_status():
+    """Check Google Drive uploader status"""
+    if not gdrive_uploader:
+        return jsonify({
+            'configured': False,
+            'message': 'Google Drive uploader not initialised. Check logs for errors.'
+        })
+    return jsonify({'configured': True, **gdrive_uploader.get_status()})
+
+
+@app.route('/api/gdrive/upload', methods=['POST'])
+def api_gdrive_upload():
+    """Manually trigger Google Drive upload for a date's orderbook files"""
+    if not gdrive_uploader:
+        return jsonify({
+            'success': False,
+            'error': 'Google Drive uploader not configured. Check GDRIVE_SERVICE_ACCOUNT_FILE and GDRIVE_FOLDER_ID in .env'
+        }), 503
+
+    data = request.get_json() or {}
+    from datetime import timezone
+    wib = timezone(timedelta(hours=7))
+    date_str = data.get('date', datetime.now(wib).strftime('%Y-%m-%d'))
+
+    try:
+        result = gdrive_uploader.upload_orderbook_day(date_str, ORDERBOOK_DIR)
+        return jsonify({'success': True, **result})
+    except Exception as e:
+        logger.error(f"GDrive upload API error: {e}", exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 # --- Market Replay ---
 
 @app.route('/api/replay/files', methods=['GET'])
@@ -1214,7 +1250,7 @@ if __name__ == '__main__':
         logger.info("Orderbook daemon started")
         
         # -- optional Google Drive uploader --
-        gdrive_uploader = None
+        global gdrive_uploader
         try:
             from config import (
                 GDRIVE_SERVICE_ACCOUNT_FILE, GDRIVE_FOLDER_ID,
@@ -1231,9 +1267,14 @@ if __name__ == '__main__':
                     )
                     logger.info("Google Drive uploader initialised")
                 else:
-                    logger.info(f"GDrive service account file not found ({sa_path}), uploads disabled")
-        except (ImportError, AttributeError) as e:
-            logger.info(f"Google Drive upload disabled: {e}")
+                    logger.warning(f"GDrive service account file not found ({sa_path}), uploads disabled")
+            else:
+                logger.warning(
+                    f"GDrive not configured: SERVICE_ACCOUNT_FILE={'set' if GDRIVE_SERVICE_ACCOUNT_FILE else 'MISSING'}, "
+                    f"FOLDER_ID={'set' if GDRIVE_FOLDER_ID else 'MISSING'}"
+                )
+        except Exception as e:
+            logger.warning(f"Google Drive upload disabled: {e}", exc_info=True)
 
         if TELEGRAM_BOT_TOKEN:
             try:

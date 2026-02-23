@@ -199,8 +199,12 @@ class GDriveUploader:
                 'skipped': 0,
                 'total_bytes': 0,
                 'results': [],
+                'subfolder_id': None,
                 'message': f'No orderbook files found for {date_str}',
             }
+
+        # pre-create the subfolder so we can return its ID for linking
+        subfolder_id = self._get_or_create_subfolder(date_str, self.folder_id)
 
         uploaded, failed, skipped = 0, 0, 0
         total_bytes = 0
@@ -226,6 +230,7 @@ class GDriveUploader:
             'total_bytes': total_bytes,
             'results': results,
             'folder_id': self.folder_id,
+            'subfolder_id': subfolder_id,
         }
 
     def upload_job_output(self, filepath: Path) -> Dict[str, Any]:
