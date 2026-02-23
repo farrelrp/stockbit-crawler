@@ -6,7 +6,6 @@ Drive folder, organising them into date-based sub-folders.
 import json
 import logging
 import os
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
@@ -14,18 +13,21 @@ logger = logging.getLogger(__name__)
 
 try:
     from google.oauth2 import service_account
+    from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
     GDRIVE_AVAILABLE = True
 except ImportError:
     GDRIVE_AVAILABLE = False
     logger.warning(
-        "google-api-python-client / google-auth not installed. "
-        "Install with: pip install google-api-python-client google-auth"
+        "google-api-python-client / google-auth / google-auth-oauthlib "
+        "not fully installed. "
+        "Install with: pip install google-api-python-client google-auth google-auth-oauthlib"
     )
 
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 UPLOAD_MANIFEST_FILE = Path('config_data/gdrive_uploads.json')
+OAUTH_TOKEN_FILE = Path('config_data/gdrive-oauth-token.json')
 
 
 class GDriveUploader:
@@ -246,3 +248,42 @@ class GDriveUploader:
             'delete_after_upload': self.delete_after_upload,
             'files_uploaded': len(self._manifest),
         }
+
+
+class GDriveUploaderOAuth(GDriveUploader):
+    """Uploader that uses an OAuth2 user token instead of a service account.
+
+    NOTE: This class expects that an OAuth token file has ALREADY been
+    created using a one-off setup script (see gdrive_oauth_setup.py).
+    It does NOT run the browser/console flow itself, so it is safe to
+    use inside systemd services.
+    """
+
+    def __init__(self, token_file: Path, folder_id: str,
+                 delete_after_upload: bool = False):
+        if not GDRIVE_AVAILABLE:
+            raise ImportError(
+                "google-api-python-client / google-auth not installed"
+            )
+
+        self.folder_id = folder_id
+        self.delete_after_upload = delete_after_upload
+        self._service = None
+        self._manifest = self._load_manifest()
+
+        try:
+            if not token_file.exists():
+                raise FileNotFoundError(
+                    f"OAuth token file not found: {token_file}. "
+                    f"Run gdrive_oauth_setup.py once to create it."
+                )
+
+            creds = Credentials.from_authorized_user_file(
+                str(token_file), scopes=SCOPES
+            )
+            self._service = build('drive', 'v3', credentials=creds,
+                                  cache_discovery=False)
+            logger.info("Google Drive service initialised (OAuth user)")
+        except Exception as e:
+            logger.error(f"Failed to initialise Google Drive (OAuth): {e}")
+            raise

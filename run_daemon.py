@@ -16,8 +16,10 @@ from pathlib import Path
 
 from config import (
     LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
-    ORDERBOOK_WATCHLIST_FILE, ORDERBOOK_DIR,
+    ORDERBOOK_WATCHLIST_FILE, ORDERBOOK_DIR, CONFIG_DIR,
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, TELEGRAM_HEARTBEAT_MINUTES,
+    GDRIVE_SERVICE_ACCOUNT_FILE, GDRIVE_FOLDER_ID,
+    GDRIVE_DELETE_AFTER_UPLOAD, GDRIVE_USE_OAUTH,
 )
 
 PID_FILE = Path('config_data/daemon.pid')
@@ -85,26 +87,34 @@ def main():
     # -- optional Google Drive uploader --
     gdrive_uploader = None
     try:
-        from config import (
-            GDRIVE_SERVICE_ACCOUNT_FILE, GDRIVE_FOLDER_ID,
-            GDRIVE_DELETE_AFTER_UPLOAD,
-        )
-        if GDRIVE_SERVICE_ACCOUNT_FILE and GDRIVE_FOLDER_ID:
-            sa_path = Path(GDRIVE_SERVICE_ACCOUNT_FILE)
-            if sa_path.exists():
-                from gdrive_uploader import GDriveUploader
-                gdrive_uploader = GDriveUploader(
-                    str(sa_path), GDRIVE_FOLDER_ID,
-                    delete_after_upload=GDRIVE_DELETE_AFTER_UPLOAD,
-                )
-                logger.info("Google Drive uploader initialised")
-            else:
-                logger.warning(f"Service account file not found: {sa_path}")
+        if not GDRIVE_FOLDER_ID:
+            logger.info("GDrive not configured (no GDRIVE_FOLDER_ID)")
         else:
-            logger.warning(
-                f"GDrive not configured: SERVICE_ACCOUNT_FILE={'set' if GDRIVE_SERVICE_ACCOUNT_FILE else 'MISSING'}, "
-                f"FOLDER_ID={'set' if GDRIVE_FOLDER_ID else 'MISSING'}"
-            )
+            from gdrive_uploader import GDriveUploader, GDriveUploaderOAuth, OAUTH_TOKEN_FILE
+
+            if GDRIVE_USE_OAUTH:
+                if not OAUTH_TOKEN_FILE.exists():
+                    logger.warning(
+                        "GDRIVE_USE_OAUTH=true but OAuth token file is missing. "
+                        "Run gdrive_oauth_setup.py once to create it."
+                    )
+                else:
+                    gdrive_uploader = GDriveUploaderOAuth(
+                        OAUTH_TOKEN_FILE, GDRIVE_FOLDER_ID,
+                        delete_after_upload=GDRIVE_DELETE_AFTER_UPLOAD,
+                    )
+                    logger.info("Google Drive uploader initialised (OAuth)")
+            else:
+                sa_path = Path(GDRIVE_SERVICE_ACCOUNT_FILE)
+                if sa_path.exists():
+                    gdrive_uploader = GDriveUploader(
+                        str(sa_path), GDRIVE_FOLDER_ID,
+                        delete_after_upload=GDRIVE_DELETE_AFTER_UPLOAD,
+                    )
+                    logger.info("Google Drive uploader initialised (service account)")
+                else:
+                    logger.info("Service account file not found, and GDRIVE_USE_OAUTH=false. "
+                                "GDrive uploads disabled.")
     except Exception as e:
         logger.warning(f"Google Drive upload disabled: {e}", exc_info=True)
 

@@ -103,7 +103,7 @@ TELEGRAM_HEARTBEAT_MINUTES = int(os.environ.get('TELEGRAM_HEARTBEAT_MINUTES', '1
 # 2Captcha settings (for reCAPTCHA v3 solving during auto-login)
 TWOCAPTCHA_API_KEY = os.environ.get('TWOCAPTCHA_API_KEY', '')
 
-# Google Drive upload settings (service account)
+# Google Drive upload settings
 GDRIVE_SERVICE_ACCOUNT_FILE = os.environ.get(
     'GDRIVE_SERVICE_ACCOUNT_FILE', str(CONFIG_DIR / 'gdrive-service-account.json')
 )
@@ -111,3 +111,7 @@ GDRIVE_FOLDER_ID = os.environ.get('GDRIVE_FOLDER_ID', '')
 GDRIVE_DELETE_AFTER_UPLOAD = os.environ.get(
     'GDRIVE_DELETE_AFTER_UPLOAD', 'false'
 ).lower() == 'true'
+
+# If true, use OAuth user credentials instead of a service account.
+# Requires a token file created by gdrive_oauth_setup.py.
+GDRIVE_USE_OAUTH = os.environ.get('GDRIVE_USE_OAUTH', 'false').lower() == 'true'

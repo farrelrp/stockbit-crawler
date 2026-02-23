@@ -24,9 +24,10 @@ pytz>=2023.3
 # Environment variables
 python-dotenv>=1.0.0
 
-# Google Drive upload (service account)
+# Google Drive upload
 google-api-python-client>=2.100.0
 google-auth>=2.23.0
+google-auth-oauthlib>=1.1.0
 
 # Auto-login only needs requests (already listed above) + 2Captcha API
 # No browser automation required — reCAPTCHA v3 is solved server-side
