@@ -1,24 +1,22 @@
 """
 One-off helper script to generate an OAuth token for Google Drive uploads.
 
-Run this manually (in a terminal with a TTY), NOT from systemd:
+Run this manually (in a terminal), NOT from systemd:
 
     source venv/bin/activate
     python gdrive_oauth_setup.py
 
-It will open a browser or print a URL for you to authorise the app and
-then save the resulting token into config_data/gdrive-oauth-token.json.
-The daemon and Flask app will reuse that token non-interactively.
+On a machine with a browser: it will open a browser for you to authorise.
+On a headless VPS: use SSH port forwarding first:
+    ssh -L 8080:localhost:8080 user@your-vps
+Then run this script and open the printed URL in your local browser.
 """
-import logging
 from pathlib import Path
 
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 from config import CONFIG_DIR
 from gdrive_uploader import SCOPES, OAUTH_TOKEN_FILE
-
-logger = logging.getLogger(__name__)
 
 
 def main():
@@ -37,15 +35,20 @@ def main():
         str(client_secrets), scopes=SCOPES
     )
 
-    # This opens a browser if available or prints a URL for you
-    creds = flow.run_console()
+    auth_url, _ = flow.authorization_url(prompt="consent")
+    print("\nOpen this URL in your browser to authorise:")
+    print(auth_url)
+    print("\nAfter authorising, you will be redirected to localhost:8080.")
+    print("If running on a VPS, use: ssh -L 8080:localhost:8080 user@vps first.\n")
+
+    creds = flow.run_local_server(port=8080, open_browser=False)
 
     OAUTH_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(OAUTH_TOKEN_FILE, "w") as f:
         f.write(creds.to_json())
 
     print(f"\nSaved OAuth token to {OAUTH_TOKEN_FILE}")
-    print("You can now set GDRIVE_USE_OAUTH=true in your .env and restart the daemon.")
+    print("Set GDRIVE_USE_OAUTH=true in .env and restart the daemon.")
 
 
 if __name__ == "__main__":
