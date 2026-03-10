@@ -15,12 +15,14 @@ from pathlib import Path
 
 from google_auth_oauthlib.flow import InstalledAppFlow
 
-from config import CONFIG_DIR
-from gdrive_uploader import SCOPES, OAUTH_TOKEN_FILE
+from config import CONFIG_DIR, GDRIVE_OAUTH_TOKEN_FILE
+from gdrive_uploader import SCOPES
 
 
 def main():
     client_secrets = CONFIG_DIR / "gdrive-oauth-client.json"
+    token_file = Path(GDRIVE_OAUTH_TOKEN_FILE)
+
     if not client_secrets.exists():
         print(
             f"Client secrets file not found: {client_secrets}\n"
@@ -39,16 +41,17 @@ def main():
     print("\nOpen this URL in your browser to authorise:")
     print(auth_url)
     print("\nAfter authorising, you will be redirected to localhost:8080.")
-    print("If running on a VPS, use: ssh -L 8080:localhost:8080 user@vps first.\n")
+    print("If running on a VPS, use SSH port forwarding first:")
+    print("  ssh -L 8080:localhost:8080 root@farrelrp\n")
 
     creds = flow.run_local_server(port=8080, open_browser=False)
 
-    OAUTH_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(OAUTH_TOKEN_FILE, "w") as f:
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(token_file, "w") as f:
         f.write(creds.to_json())
 
-    print(f"\nSaved OAuth token to {OAUTH_TOKEN_FILE}")
-    print("Set GDRIVE_USE_OAUTH=true in .env and restart the daemon.")
+    print(f"\nToken saved to {token_file}")
+    print("Restart the daemon to pick up the new token.")
 
 
 if __name__ == "__main__":
