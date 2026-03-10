@@ -928,14 +928,25 @@ class TelegramBot:
         if not self.gdrive_uploader:
             await update.message.reply_text(
                 "Google Drive uploader is not configured.\n"
-                "Check GDRIVE_SERVICE_ACCOUNT_FILE and GDRIVE_FOLDER_ID in .env"
+                "Check GDRIVE_OAUTH_TOKEN_FILE and GDRIVE_FOLDER_ID in .env"
             )
             return
 
         # optional date arg, defaults to today WIB
         date_str = self._now_wib().strftime('%Y-%m-%d')
         if context.args:
-            date_str = context.args[0].strip()
+            raw = context.args[0].strip()
+            # validate YYYY-MM-DD format
+            try:
+                datetime.strptime(raw, '%Y-%m-%d')
+                date_str = raw
+            except ValueError:
+                await update.message.reply_text(
+                    f"Invalid date format: `{raw}`\n"
+                    f"Use YYYY-MM-DD, e.g. `/upload 2026-03-09`",
+                    parse_mode="Markdown"
+                )
+                return
 
         await update.message.reply_text(f"Uploading orderbook files for {date_str}...")
         await self._run_gdrive_upload(date_str, notify_chat_id=update.effective_chat.id)
