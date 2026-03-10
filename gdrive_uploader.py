@@ -1,7 +1,10 @@
 """
-Google Drive uploader using a Service Account.
-Uploads orderbook CSVs (and optionally historical trade CSVs) to a shared
-Drive folder, organising them into date-based sub-folders.
+Google Drive uploader supporting both OAuth user credentials and service accounts.
+
+OAuth credentials (gdrive-oauth-client.json + gdrive-oauth-token.json) work with
+personal Google Drive and auto-refresh the token — no expiry issues.
+
+Service accounts only work with Shared Drives (Google Workspace), not personal Drive.
 """
 import json
 import logging
@@ -12,16 +15,14 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger(__name__)
 
 try:
-    from google.oauth2 import service_account
-    from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
+    from google.auth.transport.requests import Request
     GDRIVE_AVAILABLE = True
 except ImportError:
     GDRIVE_AVAILABLE = False
     logger.warning(
-        "google-api-python-client / google-auth / google-auth-oauthlib "
-        "not fully installed. "
+        "google-api-python-client / google-auth not installed. "
         "Install with: pip install google-api-python-client google-auth google-auth-oauthlib"
     )
 
@@ -31,10 +32,26 @@ OAUTH_TOKEN_FILE = Path('config_data/gdrive-oauth-token.json')
 
 
 class GDriveUploader:
-    """Handles uploading files to Google Drive via a service account."""
+    """Handles uploading files to Google Drive.
 
-    def __init__(self, service_account_file: str, folder_id: str,
-                 delete_after_upload: bool = False):
+    Supports two auth modes (tried in order):
+    1. OAuth user credentials — works with personal Google Drive (recommended)
+    2. Service account — only works with Shared Drives (Google Workspace)
+
+    OAuth mode requires:
+    - oauth_client_file: path to OAuth client_secrets JSON (downloaded from Cloud Console)
+    - oauth_token_file:  path to stored token JSON (generated once via auth flow)
+
+    If the token is expired it is refreshed automatically using the stored refresh_token.
+    """
+
+    def __init__(self, folder_id: str,
+                 delete_after_upload: bool = False,
+                 # OAuth params
+                 oauth_client_file: str = None,
+                 oauth_token_file: str = None,
+                 # Service account params (legacy fallback)
+                 service_account_file: str = None):
         if not GDRIVE_AVAILABLE:
             raise ImportError(
                 "google-api-python-client / google-auth not installed"
@@ -45,16 +62,53 @@ class GDriveUploader:
         self._service = None
         self._manifest = self._load_manifest()
 
-        try:
-            creds = service_account.Credentials.from_service_account_file(
-                service_account_file, scopes=SCOPES
+        creds = None
+
+        # --- OAuth user credentials (preferred for personal Drive) ---
+        if oauth_token_file and Path(oauth_token_file).exists():
+            try:
+                from google.oauth2.credentials import Credentials
+                creds = Credentials.from_authorized_user_file(oauth_token_file, SCOPES)
+
+                # refresh if expired
+                if creds and creds.expired and creds.refresh_token:
+                    logger.info("OAuth token expired, refreshing...")
+                    creds.refresh(Request())
+                    # save refreshed token back to disk
+                    with open(oauth_token_file, 'w') as f:
+                        f.write(creds.to_json())
+                    logger.info("OAuth token refreshed and saved")
+
+                if creds and creds.valid:
+                    self._service = build('drive', 'v3', credentials=creds,
+                                          cache_discovery=False)
+                    logger.info("Google Drive initialised (OAuth user credentials)")
+                else:
+                    logger.warning("OAuth token is invalid and could not be refreshed")
+                    creds = None
+            except Exception as e:
+                logger.warning(f"OAuth credentials failed: {e}")
+                creds = None
+
+        # --- Service account fallback ---
+        if self._service is None and service_account_file and Path(service_account_file).exists():
+            try:
+                from google.oauth2 import service_account as sa
+                creds = sa.Credentials.from_service_account_file(
+                    service_account_file, scopes=SCOPES
+                )
+                self._service = build('drive', 'v3', credentials=creds,
+                                      cache_discovery=False)
+                logger.info("Google Drive initialised (service account)")
+            except Exception as e:
+                logger.error(f"Service account auth failed: {e}")
+                raise
+
+        if self._service is None:
+            raise RuntimeError(
+                "Could not initialise Google Drive. "
+                "Provide a valid oauth_token_file or service_account_file."
             )
-            self._service = build('drive', 'v3', credentials=creds,
-                                  cache_discovery=False)
-            logger.info("Google Drive service initialised (service account)")
-        except Exception as e:
-            logger.error(f"Failed to initialise Google Drive: {e}")
-            raise
 
     # ---- manifest (duplicate tracking) ----
 

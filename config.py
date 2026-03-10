@@ -104,6 +104,14 @@ TELEGRAM_HEARTBEAT_MINUTES = int(os.environ.get('TELEGRAM_HEARTBEAT_MINUTES', '1
 TWOCAPTCHA_API_KEY = os.environ.get('TWOCAPTCHA_API_KEY', '')
 
 # Google Drive upload settings
+# OAuth credentials (preferred for personal Google Drive)
+GDRIVE_OAUTH_CLIENT_FILE = os.environ.get(
+    'GDRIVE_OAUTH_CLIENT_FILE', str(CONFIG_DIR / 'gdrive-oauth-client.json')
+)
+GDRIVE_OAUTH_TOKEN_FILE = os.environ.get(
+    'GDRIVE_OAUTH_TOKEN_FILE', str(CONFIG_DIR / 'gdrive-oauth-token.json')
+)
+# Service account (fallback, only works with Shared Drives / Google Workspace)
 GDRIVE_SERVICE_ACCOUNT_FILE = os.environ.get(
     'GDRIVE_SERVICE_ACCOUNT_FILE', str(CONFIG_DIR / 'gdrive-service-account.json')
 )

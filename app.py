@@ -1253,41 +1253,22 @@ if __name__ == '__main__':
         global gdrive_uploader
         try:
             from config import (
+                GDRIVE_OAUTH_CLIENT_FILE, GDRIVE_OAUTH_TOKEN_FILE,
                 GDRIVE_SERVICE_ACCOUNT_FILE, GDRIVE_FOLDER_ID,
-                GDRIVE_DELETE_AFTER_UPLOAD, GDRIVE_USE_OAUTH,
+                GDRIVE_DELETE_AFTER_UPLOAD,
             )
             if GDRIVE_FOLDER_ID:
-                from pathlib import Path as _P
-                from gdrive_uploader import GDriveUploader, GDriveUploaderOAuth, OAUTH_TOKEN_FILE
-
-                if GDRIVE_USE_OAUTH:
-                    if OAUTH_TOKEN_FILE.exists():
-                        gdrive_uploader = GDriveUploaderOAuth(
-                            OAUTH_TOKEN_FILE, GDRIVE_FOLDER_ID,
-                            delete_after_upload=GDRIVE_DELETE_AFTER_UPLOAD,
-                        )
-                        logger.info("Google Drive uploader initialised (OAuth)")
-                    else:
-                        logger.warning(
-                            "GDRIVE_USE_OAUTH=true but OAuth token file is missing. "
-                            "Run gdrive_oauth_setup.py once to create it."
-                        )
-                else:
-                    sa_path = _P(GDRIVE_SERVICE_ACCOUNT_FILE)
-                    if sa_path.exists():
-                        gdrive_uploader = GDriveUploader(
-                            str(sa_path), GDRIVE_FOLDER_ID,
-                            delete_after_upload=GDRIVE_DELETE_AFTER_UPLOAD,
-                        )
-                        logger.info("Google Drive uploader initialised (service account)")
-                    else:
-                        logger.warning(
-                            f"GDrive service account file not found ({sa_path}), uploads disabled"
-                        )
-            else:
-                logger.warning(
-                    f"GDrive not configured: FOLDER_ID={'set' if GDRIVE_FOLDER_ID else 'MISSING'}"
+                from gdrive_uploader import GDriveUploader
+                gdrive_uploader = GDriveUploader(
+                    folder_id=GDRIVE_FOLDER_ID,
+                    delete_after_upload=GDRIVE_DELETE_AFTER_UPLOAD,
+                    oauth_client_file=GDRIVE_OAUTH_CLIENT_FILE,
+                    oauth_token_file=GDRIVE_OAUTH_TOKEN_FILE,
+                    service_account_file=GDRIVE_SERVICE_ACCOUNT_FILE,
                 )
+                logger.info("Google Drive uploader initialised")
+            else:
+                logger.warning("GDrive not configured: GDRIVE_FOLDER_ID is missing from .env")
         except Exception as e:
             logger.warning(f"Google Drive upload disabled: {e}", exc_info=True)
 
