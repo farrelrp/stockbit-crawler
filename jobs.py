@@ -53,10 +53,12 @@ class Job:
     delay_seconds: float
     limit: int
     parallel_workers: int = 1  # number of stocks to process in parallel
+    max_retries: int = 2       # auto-retry failed tasks this many times
     status: JobStatus = JobStatus.QUEUED
     created_at: str = field(default_factory=lambda: now_wib().isoformat())
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+    error: Optional[str] = None  # job-level error message if the job itself fails
     tasks: List[Task] = field(default_factory=list)
     
     def to_dict(self) -> Dict[str, Any]:
@@ -289,8 +291,42 @@ class JobManager:
         job = self.jobs.get(job_id)
         if job:
             job.status = JobStatus.FAILED
+            job.error = 'Cancelled by user'
             self._persist_job(job)
             logger.info(f"Job {job_id} cancelled")
+
+    def retry_job(self, job_id: str) -> bool:
+        """Reset a FAILED job back to QUEUED so it can be re-processed.
+        
+        Tasks that previously FAILED are reset to PENDING; completed/skipped
+        tasks are left intact so we don't re-fetch already-saved data.
+        Returns True if the job was eligible and re-queued.
+        """
+        job = self.jobs.get(job_id)
+        if not job or job.status != JobStatus.FAILED:
+            return False
+
+        # reset failed tasks to pending
+        for task in job.tasks:
+            if task.status == TaskStatus.FAILED:
+                task.status = TaskStatus.PENDING
+                task.error = None
+                task.attempts = 0
+                task.records_fetched = 0
+                task.pages_fetched = 0
+                task.current_page = 0
+
+        job.status = JobStatus.QUEUED
+        job.error = None
+        job.completed_at = None
+        self._persist_job(job)
+        logger.info(f"Job {job_id} re-queued for retry")
+
+        # ensure the worker is running
+        if not self.worker_thread or not self.worker_thread.is_alive():
+            self.start_worker()
+
+        return True
     
     def start_worker(self):
         """Start background worker thread"""
@@ -421,6 +457,7 @@ class JobManager:
         except Exception as e:
             logger.error(f"Job {job.job_id} failed with error: {e}")
             job.status = JobStatus.FAILED
+            job.error = str(e)
             self._persist_job(job)
 
             self._notify('job_failed', {
@@ -433,113 +470,135 @@ class JobManager:
             self.current_job_id = None
     
     def _process_task(self, job: Job, task: Task):
-        """Process a single task (fetch data for one ticker-date)"""
-        task.status = TaskStatus.RUNNING
-        task.attempts += 1
-        task.current_page = 0
+        """Process a single task (fetch data for one ticker-date) with auto-retry.
         
-        logger.info(f"Fetching {task.ticker} for {task.date}")
-        
-        # progress callback to update task in real-time
-        def update_progress(page: int, total_records: int):
-            task.current_page = page
-            task.records_fetched = total_records
-        
-        try:
-            # fetch data with progress tracking
-            result = self.client.fetch_running_trade(
-                ticker=task.ticker,
-                date=task.date,
-                limit=job.limit,
-                progress_callback=update_progress
-            )
-            
-            if result.get('success'):
-                # save to CSV
-                trades = result.get('data', [])
-                filename = self.storage.get_filename(
-                    task.ticker,
-                    job.from_date,
-                    job.until_date
-                )
-                
-                save_result = self.storage.save_trades(
+        The task will be attempted up to (1 + job.max_retries) times on
+        transient failures.  Login/captcha pauses abort immediately without
+        consuming retry budget.
+        """
+        max_attempts = 1 + job.max_retries
+
+        for attempt in range(1, max_attempts + 1):
+            task.status = TaskStatus.RUNNING
+            task.attempts += 1
+            task.current_page = 0
+
+            if attempt > 1:
+                logger.info(f"Retrying {task.ticker} {task.date} (attempt {attempt}/{max_attempts})")
+            else:
+                logger.info(f"Fetching {task.ticker} for {task.date}")
+
+            # progress callback to update task in real-time
+            def update_progress(page: int, total_records: int):
+                task.current_page = page
+                task.records_fetched = total_records
+
+            try:
+                # fetch data with progress tracking
+                result = self.client.fetch_running_trade(
                     ticker=task.ticker,
                     date=task.date,
-                    trades=trades,
-                    filename=filename
+                    limit=job.limit,
+                    progress_callback=update_progress
                 )
-                
-                if save_result.get('success'):
-                    task.status = TaskStatus.COMPLETED
-                    task.records_fetched = result.get('count', 0)
-                    task.pages_fetched = result.get('pages_fetched', 1)
-                    logger.info(f"Saved {task.records_fetched} records ({task.pages_fetched} pages) for {task.ticker} {task.date}")
-                    # persist progress every 5 tasks
-                    progress = job.get_progress()
-                    if progress['completed'] % 5 == 0:
-                        self._persist_job(job)
 
-                    # send milestone notifications at 25/50/75%
-                    pct = progress['percentage']
-                    for milestone in (25, 50, 75):
-                        if pct >= milestone and getattr(self, '_last_milestone', 0) < milestone:
-                            self._last_milestone = milestone
-                            self._notify('job_progress', {
-                                'job_id': job.job_id,
-                                'tickers': job.tickers,
-                                'percentage': pct,
-                                'completed': progress['completed'],
-                                'total': progress['total'],
-                                'failed': progress['failed'],
-                            })
+                if result.get('success'):
+                    # save to CSV
+                    trades = result.get('data', [])
+                    filename = self.storage.get_filename(
+                        task.ticker,
+                        job.from_date,
+                        job.until_date
+                    )
+
+                    save_result = self.storage.save_trades(
+                        ticker=task.ticker,
+                        date=task.date,
+                        trades=trades,
+                        filename=filename
+                    )
+
+                    if save_result.get('success'):
+                        task.status = TaskStatus.COMPLETED
+                        task.records_fetched = result.get('count', 0)
+                        task.pages_fetched = result.get('pages_fetched', 1)
+                        logger.info(f"Saved {task.records_fetched} records ({task.pages_fetched} pages) for {task.ticker} {task.date}")
+                        # persist progress every 5 tasks
+                        progress = job.get_progress()
+                        if progress['completed'] % 5 == 0:
+                            self._persist_job(job)
+
+                        # send milestone notifications at 25/50/75%
+                        pct = progress['percentage']
+                        for milestone in (25, 50, 75):
+                            if pct >= milestone and getattr(self, '_last_milestone', 0) < milestone:
+                                self._last_milestone = milestone
+                                self._notify('job_progress', {
+                                    'job_id': job.job_id,
+                                    'tickers': job.tickers,
+                                    'percentage': pct,
+                                    'completed': progress['completed'],
+                                    'total': progress['total'],
+                                    'failed': progress['failed'],
+                                })
+                        return  # success — exit retry loop
+
+                    else:
+                        # save error — worth retrying
+                        task.error = save_result.get('error', 'Unknown save error')
+                        logger.error(f"Failed to save {task.ticker} {task.date} (attempt {attempt}): {task.error}")
+
                 else:
-                    task.status = TaskStatus.FAILED
-                    task.error = save_result.get('error', 'Unknown save error')
-                    logger.error(f"Failed to save {task.ticker} {task.date}: {task.error}")
-            
-            else:
-                # fetch failed
-                error = result.get('error', 'Unknown error')
-                
-                # handle special cases - pause job gracefully
-                if result.get('requires_login'):
-                    job.status = JobStatus.PAUSED
-                    task.status = TaskStatus.PENDING
-                    task.error = 'Token expired - job paused'
-                    task.current_page = 0
-                    self._persist_job(job)
-                    logger.warning(f"Job {job.job_id} PAUSED - Token expired. Set new token to resume.")
-                    self._notify('job_paused', {
-                        'job_id': job.job_id,
-                        'tickers': job.tickers,
-                        'reason': 'Token expired',
-                    })
-                    return
-                
-                elif result.get('captcha_required'):
-                    job.status = JobStatus.PAUSED
-                    task.status = TaskStatus.PENDING
-                    task.error = 'Captcha required'
-                    task.current_page = 0
-                    self._persist_job(job)
-                    logger.warning(f"Job {job.job_id} paused due to captcha")
-                    self._notify('job_paused', {
-                        'job_id': job.job_id,
-                        'tickers': job.tickers,
-                        'reason': 'Captcha required',
-                    })
-                    return
-                
-                else:
-                    # other error - mark task failed and continue
-                    task.status = TaskStatus.FAILED
-                    task.error = error
-                    logger.error(f"Task failed {task.ticker} {task.date}: {error}")
-        
-        except Exception as e:
-            task.status = TaskStatus.FAILED
-            task.error = str(e)
-            task.current_page = 0
-            logger.error(f"Task exception {task.ticker} {task.date}: {e}")
+                    # fetch failed
+                    error = result.get('error', 'Unknown error')
+
+                    # handle special cases - pause job gracefully (no retry)
+                    if result.get('requires_login'):
+                        job.status = JobStatus.PAUSED
+                        task.status = TaskStatus.PENDING
+                        task.error = 'Token expired - job paused'
+                        task.current_page = 0
+                        self._persist_job(job)
+                        logger.warning(f"Job {job.job_id} PAUSED - Token expired. Set new token to resume.")
+                        self._notify('job_paused', {
+                            'job_id': job.job_id,
+                            'tickers': job.tickers,
+                            'reason': 'Token expired',
+                        })
+                        return
+
+                    elif result.get('captcha_required'):
+                        job.status = JobStatus.PAUSED
+                        task.status = TaskStatus.PENDING
+                        task.error = 'Captcha required'
+                        task.current_page = 0
+                        self._persist_job(job)
+                        logger.warning(f"Job {job.job_id} paused due to captcha")
+                        self._notify('job_paused', {
+                            'job_id': job.job_id,
+                            'tickers': job.tickers,
+                            'reason': 'Captcha required',
+                        })
+                        return
+
+                    else:
+                        # other error — may retry
+                        task.error = error
+                        logger.error(f"Task failed {task.ticker} {task.date} (attempt {attempt}): {error}")
+
+            except Exception as e:
+                task.error = str(e)
+                task.current_page = 0
+                logger.error(f"Task exception {task.ticker} {task.date} (attempt {attempt}): {e}")
+
+            # if we haven't returned by now, this attempt failed
+            if attempt < max_attempts:
+                # brief back-off before retry
+                backoff = 2.0 * attempt
+                logger.info(f"Back-off {backoff}s before retry {attempt + 1}/{max_attempts} for {task.ticker} {task.date}")
+                time.sleep(backoff)
+
+        # all attempts exhausted
+        task.status = TaskStatus.FAILED
+        logger.error(f"Task {task.ticker} {task.date} permanently failed after {max_attempts} attempt(s): {task.error}")
 

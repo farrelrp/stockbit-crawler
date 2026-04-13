@@ -81,6 +81,49 @@
             color: #28a745;
             margin-right: 4px;
         }
+
+        /* ---- Retry / Error UI ---- */
+        .job-error-banner {
+            background: #fff0f0;
+            border: 1px solid #f5c6cb;
+            border-left: 4px solid #dc3545;
+            border-radius: 6px;
+            padding: 10px 14px;
+            margin-bottom: 12px;
+            color: #842029;
+            font-size: 13px;
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+        }
+        .job-error-banner .error-icon { font-size: 16px; flex-shrink: 0; }
+        .job-error-banner .error-text { flex: 1; word-break: break-word; }
+
+        .task-error-text {
+            display: block;
+            color: #dc3545;
+            font-size: 11px;
+            margin-top: 2px;
+            word-break: break-word;
+        }
+
+        .btn-retry {
+            background: none;
+            border: 1.5px solid #d97706;
+            color: #d97706;
+            border-radius: 6px;
+            padding: 3px 9px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s;
+        }
+        .btn-retry:hover {
+            background: #d97706;
+            color: white;
+        }
+
+        .job-card.status-failed { cursor: pointer; }
+        .job-card.status-failed:hover { border-color: #dc3545; background: #fff8f8; }
     </style>
     <h2>Jobs Management</h2>
     
@@ -417,9 +460,11 @@ function loadJobs() {
             container.innerHTML = jobs.map(job => {
                 const progress = job.progress || {};
                 const percentage = progress.percentage || 0;
-                
+                const isFailed = job.status === 'FAILED';
+                const cardClickHandler = isFailed ? `onclick="showJobDetails('${job.job_id}')"` : '';
+
                 return `
-                    <div class="job-card">
+                    <div class="job-card status-${job.status.toLowerCase()}" ${cardClickHandler}>
                         <div class="job-header">
                             <div>
                                 <span class="job-id">${job.job_id.substring(0, 8)}</span>
@@ -427,12 +472,14 @@ function loadJobs() {
                             </div>
                             <div class="job-actions">
                                 ${job.status === 'RUNNING' ? 
-                                    `<button onclick="pauseJob('${job.job_id}')" class="btn-icon">⏸</button>` : ''}
+                                    `<button onclick="pauseJob('${job.job_id}')" class="btn-icon" title="Pause">⏸</button>` : ''}
                                 ${job.status === 'PAUSED' ? 
-                                    `<button onclick="resumeJob('${job.job_id}')" class="btn-icon">▶</button>` : ''}
+                                    `<button onclick="resumeJob('${job.job_id}')" class="btn-icon" title="Resume">▶</button>` : ''}
+                                ${job.status === 'FAILED' ?
+                                    `<button onclick="event.stopPropagation(); retryJob('${job.job_id}')" class="btn-retry" title="Retry failed tasks">↺ Retry</button>` : ''}
                                 ${job.status === 'RUNNING' || job.status === 'PAUSED' || job.status === 'QUEUED' ? 
-                                    `<button onclick="cancelJob('${job.job_id}')" class="btn-icon">✕</button>` : ''}
-                                <button onclick="showJobDetails('${job.job_id}')" class="btn-icon">ℹ</button>
+                                    `<button onclick="cancelJob('${job.job_id}')" class="btn-icon" title="Cancel">✕</button>` : ''}
+                                <button onclick="event.stopPropagation(); showJobDetails('${job.job_id}')" class="btn-icon" title="Details">ℹ</button>
                             </div>
                         </div>
                         <div class="job-info">
@@ -444,6 +491,10 @@ function loadJobs() {
                         <div class="job-info">
                             <strong>Created:</strong> ${new Date(job.created_at).toLocaleString()} ${job.parallel_workers > 1 ? `🚀 ${job.parallel_workers}x parallel` : ''}
                         </div>
+                        ${isFailed && job.error ? `
+                        <div class="job-info" style="color:#dc3545; font-size:12px;">
+                            ⚠ ${job.error}
+                        </div>` : ''}
                         <div class="progress-bar">
                             <div class="progress-fill" style="width: ${percentage}%"></div>
                         </div>
@@ -491,6 +542,20 @@ function cancelJob(jobId) {
         });
 }
 
+function retryJob(jobId) {
+    fetch(`/api/jobs/${jobId}/retry`, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                showNotification('Job re-queued — retrying failed tasks…', 'success');
+                loadJobs();
+            } else {
+                showNotification('Could not retry: ' + (data.error || 'Unknown error'), 'error');
+            }
+        })
+        .catch(err => showNotification('Request failed: ' + err.message, 'error'));
+}
+
 let jobDetailsInterval;
 
 function showJobDetails(jobId) {
@@ -533,6 +598,11 @@ function loadJobDetails(jobId, content) {
                 <div class="job-details">
                     <div class="detail-section">
                         <h3>Job Information</h3>
+                        ${job.error ? `
+                        <div class="job-error-banner">
+                            <span class="error-icon">⚠️</span>
+                            <div class="error-text"><strong>Error:</strong> ${job.error}</div>
+                        </div>` : ''}
                         <div class="detail-row">
                             <strong>Job ID:</strong> ${job.job_id}
                         </div>
@@ -556,6 +626,10 @@ function loadJobDetails(jobId, content) {
                                 <strong>Completed:</strong> ${new Date(job.completed_at).toLocaleString()}
                             </div>
                         ` : ''}
+                        ${job.status === 'FAILED' ? `
+                        <div style="margin-top: 12px;">
+                            <button class="btn-retry" onclick="retryJob('${job.job_id}'); closeJobModal();">↺ Retry Failed Tasks</button>
+                        </div>` : ''}
                     </div>
                     
                     <div class="detail-section">
@@ -566,7 +640,7 @@ function loadJobDetails(jobId, content) {
                             
                             return `
                                 <div class="ticker-tasks">
-                                    <h4>${ticker} (${tickerCompleted}/${tasks.length} completed)</h4>
+                                    <h4>${ticker} (${tickerCompleted}/${tasks.length} completed${tickerFailed > 0 ? `, <span style="color:#dc3545">${tickerFailed} failed</span>` : ''})</h4>
                                     <div class="tasks-grid">
                                         ${tasks.map(task => {
                                             let statusDisplay = task.status;
@@ -579,14 +653,18 @@ function loadJobDetails(jobId, content) {
                                             } else if (task.records_fetched > 0) {
                                                 progressInfo = `<span class="task-count">${task.records_fetched} records (${task.pages_fetched || 1} pages)</span>`;
                                             }
+
+                                            const attemptsInfo = task.attempts > 1 ?
+                                                `<span class="task-count" style="color:#6c757d;">Attempts: ${task.attempts}</span>` : '';
                                             
                                             return `
                                                 <div class="task-item task-${task.status.toLowerCase()}">
                                                     <span class="task-date">${task.date}</span>
                                                     <span class="task-status">${statusDisplay}</span>
                                                     ${progressInfo}
+                                                    ${attemptsInfo}
                                                     ${task.error ? 
-                                                        `<span class="task-error" title="${task.error}">⚠</span>` : ''}
+                                                        `<span class="task-error-text">⚠ ${task.error}</span>` : ''}
                                                 </div>
                                             `;
                                         }).join('')}

@@ -517,6 +517,14 @@ def api_job_cancel(job_id):
     job_manager.cancel_job(job_id)
     return jsonify({'success': True})
 
+@app.route('/api/jobs/<job_id>/retry', methods=['POST'])
+def api_job_retry(job_id):
+    """Retry a failed job — resets failed tasks and re-queues the job"""
+    ok = job_manager.retry_job(job_id)
+    if ok:
+        return jsonify({'success': True})
+    return jsonify({'success': False, 'error': 'Job not found or not in FAILED state'}), 400
+
 # --- Orderbook Streaming ---
 
 @app.route('/api/orderbook/streams', methods=['GET'])
@@ -1218,6 +1226,7 @@ def server_error(e):
 # ===== MAIN =====
 
 if __name__ == '__main__':
+    import gdrive_uploader
     import os
     import atexit
     import signal
@@ -1250,7 +1259,6 @@ if __name__ == '__main__':
         logger.info("Orderbook daemon started")
         
         # -- optional Google Drive uploader --
-        global gdrive_uploader
         try:
             from config import (
                 GDRIVE_OAUTH_CLIENT_FILE, GDRIVE_OAUTH_TOKEN_FILE,
