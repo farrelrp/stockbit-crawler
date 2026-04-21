@@ -486,12 +486,16 @@ function loadJobs() {
                                 <span class="status-badge status-${job.status.toLowerCase()}">${job.status}</span>
                             </div>
                             <div class="job-actions">
+                                ${job.status === 'QUEUED' ?
+                                    `<button onclick="playQueuedJob('${job.job_id}')" class="btn-icon" title="Play queued job">▶</button>` : ''}
                                 ${job.status === 'RUNNING' ? 
                                     `<button onclick="pauseJob('${job.job_id}')" class="btn-icon" title="Pause">⏸</button>` : ''}
                                 ${job.status === 'PAUSED' ? 
                                     `<button onclick="resumeJob('${job.job_id}')" class="btn-icon" title="Resume">▶</button>` : ''}
                                 ${job.status === 'FAILED' ?
                                     `<button onclick="event.stopPropagation(); retryJob('${job.job_id}')" class="btn-retry" title="Retry failed tasks">↺ Retry</button>` : ''}
+                                ${job.status === 'FAILED' || job.status === 'PAUSED' ?
+                                    `<button onclick="event.stopPropagation(); deleteJob('${job.job_id}')" class="btn-icon" title="Delete">🗑</button>` : ''}
                                 ${job.status === 'RUNNING' || job.status === 'PAUSED' || job.status === 'QUEUED' ? 
                                     `<button onclick="cancelJob('${job.job_id}')" class="btn-icon" title="Cancel">✕</button>` : ''}
                                 <button onclick="event.stopPropagation(); showJobDetails('${job.job_id}')" class="btn-icon" title="Details">ℹ</button>
@@ -537,6 +541,20 @@ function pauseJob(jobId) {
         });
 }
 
+function playQueuedJob(jobId) {
+    fetch(`/api/jobs/${jobId}/play`, { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                showNotification('Queued job started', 'success');
+                loadJobs();
+            } else {
+                showNotification('Could not start queued job: ' + (data.error || 'Unknown error'), 'error');
+            }
+        })
+        .catch(err => showNotification('Request failed: ' + err.message, 'error'));
+}
+
 function resumeJob(jobId) {
     fetch(`/api/jobs/${jobId}/resume`, { method: 'POST' })
         .then(r => r.json())
@@ -544,6 +562,22 @@ function resumeJob(jobId) {
             showNotification('Job resumed', 'success');
             loadJobs();
         });
+}
+
+function deleteJob(jobId) {
+    if (!confirm('Delete this job permanently? This cannot be undone.')) return;
+
+    fetch(`/api/jobs/${jobId}`, { method: 'DELETE' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                showNotification('Job deleted', 'success');
+                loadJobs();
+            } else {
+                showNotification('Could not delete job: ' + (data.error || 'Unknown error'), 'error');
+            }
+        })
+        .catch(err => showNotification('Request failed: ' + err.message, 'error'));
 }
 
 function cancelJob(jobId) {

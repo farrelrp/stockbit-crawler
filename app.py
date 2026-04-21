@@ -511,11 +511,27 @@ def api_job_resume(job_id):
     job_manager.resume_job(job_id)
     return jsonify({'success': True})
 
+@app.route('/api/jobs/<job_id>/play', methods=['POST'])
+def api_job_play(job_id):
+    """Start a queued job"""
+    ok = job_manager.play_queued_job(job_id)
+    if ok:
+        return jsonify({'success': True})
+    return jsonify({'success': False, 'error': 'Job not found or not in QUEUED state'}), 400
+
 @app.route('/api/jobs/<job_id>/cancel', methods=['POST'])
 def api_job_cancel(job_id):
     """Cancel a job"""
     job_manager.cancel_job(job_id)
     return jsonify({'success': True})
+
+@app.route('/api/jobs/<job_id>', methods=['DELETE'])
+def api_job_delete(job_id):
+    """Delete a paused or failed job"""
+    ok = job_manager.delete_job(job_id)
+    if ok:
+        return jsonify({'success': True})
+    return jsonify({'success': False, 'error': 'Job not found or not in PAUSED/FAILED state'}), 400
 
 @app.route('/api/jobs/<job_id>/retry', methods=['POST'])
 def api_job_retry(job_id):

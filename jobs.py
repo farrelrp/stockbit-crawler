@@ -272,6 +272,16 @@ class JobManager:
             # restart worker if not running
             if not self.worker_thread or not self.worker_thread.is_alive():
                 self.start_worker()
+
+    def play_queued_job(self, job_id: str) -> bool:
+        """Kick a queued job so worker starts processing it."""
+        job = self.jobs.get(job_id)
+        if not job or job.status != JobStatus.QUEUED:
+            return False
+
+        if not self.worker_thread or not self.worker_thread.is_alive():
+            self.start_worker()
+        return True
     
     def auto_resume_paused_jobs(self):
         """Auto-resume all paused jobs (call when token is refreshed)"""
@@ -294,6 +304,25 @@ class JobManager:
             job.error = 'Cancelled by user'
             self._persist_job(job)
             logger.info(f"Job {job_id} cancelled")
+
+    def delete_job(self, job_id: str) -> bool:
+        """Delete a job if it's failed or paused."""
+        job = self.jobs.get(job_id)
+        if not job:
+            return False
+
+        if job.status not in [JobStatus.FAILED, JobStatus.PAUSED]:
+            return False
+
+        deleted = self.db.delete_job(job_id)
+        if not deleted:
+            return False
+
+        self.jobs.pop(job_id, None)
+        if self.current_job_id == job_id:
+            self.current_job_id = None
+        logger.info(f"Deleted job {job_id}")
+        return True
 
     def retry_job(self, job_id: str) -> bool:
         """Reset a FAILED job back to QUEUED so it can be re-processed.
