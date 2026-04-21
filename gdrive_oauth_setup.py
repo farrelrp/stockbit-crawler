@@ -51,7 +51,7 @@ def main():
         f.write(creds.to_json())
 
     print(f"\nToken saved to {token_file}")
-    print("Restart the daemon to pick up the new token.")
+    print("Restart the daemon to     pick up the new token.")
 
 
 if __name__ == "__main__":

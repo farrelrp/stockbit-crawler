@@ -525,6 +525,21 @@ def api_job_retry(job_id):
         return jsonify({'success': True})
     return jsonify({'success': False, 'error': 'Job not found or not in FAILED state'}), 400
 
+@app.route('/api/jobs/<job_id>/tasks/retry', methods=['POST'])
+def api_job_retry_task(job_id):
+    """Retry one failed task in a job."""
+    data = request.get_json() or {}
+    ticker = (data.get('ticker') or '').strip().upper()
+    date = (data.get('date') or '').strip()
+
+    if not ticker or not date:
+        return jsonify({'success': False, 'error': 'ticker and date are required'}), 400
+
+    ok = job_manager.retry_task(job_id, ticker, date)
+    if ok:
+        return jsonify({'success': True})
+    return jsonify({'success': False, 'error': 'Task not found or not in FAILED state'}), 400
+
 # --- Orderbook Streaming ---
 
 @app.route('/api/orderbook/streams', methods=['GET'])

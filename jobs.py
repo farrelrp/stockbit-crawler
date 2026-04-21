@@ -327,6 +327,46 @@ class JobManager:
             self.start_worker()
 
         return True
+
+    def retry_task(self, job_id: str, ticker: str, date: str) -> bool:
+        """Retry one FAILED task in a job.
+
+        This keeps all other tasks untouched and only re-queues the exact
+        ticker+date pair.
+        """
+        job = self.jobs.get(job_id)
+        if not job:
+            return False
+
+        task_to_retry = None
+        for task in job.tasks:
+            if task.ticker == ticker and task.date == date:
+                task_to_retry = task
+                break
+
+        if not task_to_retry or task_to_retry.status != TaskStatus.FAILED:
+            return False
+
+        task_to_retry.status = TaskStatus.PENDING
+        task_to_retry.error = None
+        task_to_retry.attempts = 0
+        task_to_retry.records_fetched = 0
+        task_to_retry.pages_fetched = 0
+        task_to_retry.current_page = 0
+
+        # Mark job queueable again so worker picks up the reset task.
+        if job.status in [JobStatus.COMPLETED, JobStatus.FAILED]:
+            job.status = JobStatus.QUEUED
+            job.completed_at = None
+            job.error = None
+
+        self._persist_job(job)
+        logger.info(f"Task {ticker} {date} in job {job_id} re-queued for retry")
+
+        if not self.worker_thread or not self.worker_thread.is_alive():
+            self.start_worker()
+
+        return True
     
     def start_worker(self):
         """Start background worker thread"""
