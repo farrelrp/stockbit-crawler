@@ -1,7 +1,7 @@
 """
 Stockbit API client for fetching running trade data
 """
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Callable
 import requests
 import time
 import logging
@@ -167,7 +167,8 @@ class StockbitClient:
         date: str,
         limit: int = DEFAULT_LIMIT,
         retry_count: int = DEFAULT_RETRY_COUNT,
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[callable] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> Dict[str, Any]:
         """
         Fetch ALL running trade data for a ticker on a specific date
@@ -179,6 +180,7 @@ class StockbitClient:
             limit: Max records to fetch per page (default 50)
             retry_count: Number of retry attempts per page
             progress_callback: Optional callback(page, total_records) for progress updates
+            cancel_check: If set, called before each page; return True to stop early (job paused/cancelled)
         
         Returns:
             Dict with success status, all data combined, and error info
@@ -190,6 +192,28 @@ class StockbitClient:
         last_trade_number = None
         
         while True:
+            # bail if the job manager says we're done (pause/cancel) — checked before hitting the API
+            if cancel_check and cancel_check():
+                logger.info(f"Fetch stopped by cancel_check for {ticker} {date} after {len(all_trades)} record(s)")
+                if all_trades:
+                    return {
+                        'success': True,
+                        'cancelled': True,
+                        'data': all_trades,
+                        'count': len(all_trades),
+                        'ticker': ticker,
+                        'date': date,
+                        'pages_fetched': max(0, page - 1),
+                        'partial': True,
+                    }
+                return {
+                    'success': False,
+                    'cancelled': True,
+                    'error': 'Cancelled',
+                    'ticker': ticker,
+                    'date': date,
+                }
+
             # report progress
             if progress_callback:
                 progress_callback(page, len(all_trades))

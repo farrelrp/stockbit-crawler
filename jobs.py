@@ -122,6 +122,10 @@ class JobManager:
                 self._notification_callback(event, data)
             except Exception as e:
                 logger.error(f"Notification callback error ({event}): {e}")
+
+    def _is_job_cancelled(self, job: Job) -> bool:
+        # FAILED during a run is effectively "stop now" (user cancel uses this status)
+        return job.status == JobStatus.FAILED
     
     def _load_jobs_from_db(self):
         """Load persisted jobs from database on startup"""
@@ -265,7 +269,12 @@ class JobManager:
         """Resume a paused job"""
         job = self.jobs.get(job_id)
         if job and job.status == JobStatus.PAUSED:
-            job.status = JobStatus.QUEUED
+            # if the worker is still inside this job's _process_job, keep RUNNING so
+            # cancel_check (status != RUNNING) doesn't instantly abort every fetch
+            if self.current_job_id == job_id:
+                job.status = JobStatus.RUNNING
+            else:
+                job.status = JobStatus.QUEUED
             self.pause_flag.clear()
             self._persist_job(job)
             logger.info(f"Job {job_id} resumed")
@@ -306,6 +315,10 @@ class JobManager:
             job.status = JobStatus.FAILED
             job.error = 'Cancelled by user'
             self._persist_job(job)
+            # nudge the worker out of pause-wait spinners (cancel while paused edge case)
+            self.pause_flag.set()
+            if not any(j.status == JobStatus.PAUSED for j in self.jobs.values()):
+                self.pause_flag.clear()
             logger.info(f"Job {job_id} cancelled")
 
     def delete_job(self, job_id: str) -> bool:
@@ -462,15 +475,27 @@ class JobManager:
             if workers == 1:
                 # sequential processing (original behavior)
                 for i, task in enumerate(pending_tasks):
-                    # check if paused or stopped
-                    while self.pause_flag.is_set() and not self.stop_flag.is_set():
+                    # check if paused or stopped (only wait while job is still PAUSED — cancel sets FAILED and exits)
+                    while (
+                        self.pause_flag.is_set()
+                        and not self.stop_flag.is_set()
+                        and job.status == JobStatus.PAUSED
+                    ):
                         time.sleep(0.5)
                     
                     if self.stop_flag.is_set():
                         job.status = JobStatus.PAUSED
                         return
+
+                    if self._is_job_cancelled(job):
+                        self._persist_job(job)
+                        return
                     
                     self._process_task(job, task)
+
+                    if self._is_job_cancelled(job):
+                        self._persist_job(job)
+                        return
                     
                     # delay between requests (skip after last task)
                     if job.delay_seconds > 0 and i < len(pending_tasks) - 1:
@@ -492,18 +517,32 @@ class JobManager:
                         remaining -= 1
                         
                         # check if paused or stopped
-                        while self.pause_flag.is_set() and not self.stop_flag.is_set():
+                        while (
+                            self.pause_flag.is_set()
+                            and not self.stop_flag.is_set()
+                            and job.status == JobStatus.PAUSED
+                        ):
                             time.sleep(0.5)
                         
                         if self.stop_flag.is_set():
                             job.status = JobStatus.PAUSED
                             executor.shutdown(wait=False)
                             return
+
+                        if self._is_job_cancelled(job):
+                            executor.shutdown(wait=False)
+                            self._persist_job(job)
+                            return
                         
                         try:
                             future.result()  # get result to catch exceptions
                         except Exception as e:
                             logger.error(f"Task {task.ticker} {task.date} raised exception: {e}")
+
+                        if self._is_job_cancelled(job):
+                            executor.shutdown(wait=False)
+                            self._persist_job(job)
+                            return
                         
                         # delay between completed tasks (skip after last)
                         if job.delay_seconds > 0 and remaining > 0:
@@ -513,26 +552,31 @@ class JobManager:
             if job.status == JobStatus.PAUSED:
                 logger.warning(f"Job {job.job_id} paused during execution")
                 return
-            
-            # job completed
-            job.status = JobStatus.COMPLETED
-            job.completed_at = now_wib().isoformat()
-            self._persist_job(job)
-            logger.info(f"[OK] Job {job.job_id} completed")
 
-            progress = job.get_progress()
-            self._notify('job_completed', {
-                'job_id': job.job_id,
-                'tickers': job.tickers,
-                'from_date': job.from_date,
-                'until_date': job.until_date,
-                'total_tasks': progress['total'],
-                'completed_tasks': progress['completed'],
-                'failed_tasks': progress['failed'],
-                'total_records': sum(t.records_fetched for t in job.tasks),
-                'started_at': job.started_at,
-                'completed_at': job.completed_at,
-            })
+            if self._is_job_cancelled(job):
+                logger.warning(f"Job {job.job_id} stopped (cancelled)")
+                return
+            
+            # job completed — don't stomp FAILED/PAUSED from cancel or token issues
+            if job.status == JobStatus.RUNNING:
+                job.status = JobStatus.COMPLETED
+                job.completed_at = now_wib().isoformat()
+                self._persist_job(job)
+                logger.info(f"[OK] Job {job.job_id} completed")
+
+                progress = job.get_progress()
+                self._notify('job_completed', {
+                    'job_id': job.job_id,
+                    'tickers': job.tickers,
+                    'from_date': job.from_date,
+                    'until_date': job.until_date,
+                    'total_tasks': progress['total'],
+                    'completed_tasks': progress['completed'],
+                    'failed_tasks': progress['failed'],
+                    'total_records': sum(t.records_fetched for t in job.tasks),
+                    'started_at': job.started_at,
+                    'completed_at': job.completed_at,
+                })
             
         except Exception as e:
             logger.error(f"Job {job.job_id} failed with error: {e}")
@@ -559,6 +603,12 @@ class JobManager:
         max_attempts = 1 + job.max_retries
 
         for attempt in range(1, max_attempts + 1):
+            if self._is_job_cancelled(job):
+                # don't leave tasks stuck in RUNNING when the job is already dead
+                task.status = TaskStatus.PENDING
+                task.current_page = 0
+                return
+
             task.status = TaskStatus.RUNNING
             task.attempts += 1
             task.current_page = 0
@@ -579,8 +629,16 @@ class JobManager:
                     ticker=task.ticker,
                     date=task.date,
                     limit=job.limit,
-                    progress_callback=update_progress
+                    progress_callback=update_progress,
+                    cancel_check=lambda: job.status != JobStatus.RUNNING,
                 )
+
+                if result.get('cancelled'):
+                    task.status = TaskStatus.PENDING
+                    task.current_page = 0
+                    task.error = None
+                    logger.info(f"Fetch aborted for {task.ticker} {task.date} (job stopped)")
+                    return
 
                 if result.get('success'):
                     # save to CSV
