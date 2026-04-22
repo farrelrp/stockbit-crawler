@@ -98,6 +98,7 @@ class JobManager:
         self.stop_flag = threading.Event()
         self.pause_flag = threading.Event()
         self.db = JobDatabase()
+        self._next_job_id: Optional[str] = None  # prioritized job set by play_queued_job
 
         # external notification callback — set by TelegramBot or others
         # signature: callback(event: str, data: dict)
@@ -274,10 +275,12 @@ class JobManager:
                 self.start_worker()
 
     def play_queued_job(self, job_id: str) -> bool:
-        """Kick a queued job so worker starts processing it."""
+        """Kick a queued job so worker starts processing it next."""
         job = self.jobs.get(job_id)
         if not job or job.status != JobStatus.QUEUED:
             return False
+
+        self._next_job_id = job_id
 
         if not self.worker_thread or not self.worker_thread.is_alive():
             self.start_worker()
@@ -414,17 +417,23 @@ class JobManager:
     def _worker_loop(self):
         """Main worker loop that processes jobs"""
         while not self.stop_flag.is_set():
-            # find next queued job
             next_job = None
-            for job in self.jobs.values():
-                if job.status == JobStatus.QUEUED:
-                    next_job = job
-                    break
+
+            if self._next_job_id:
+                prioritized = self.jobs.get(self._next_job_id)
+                if prioritized and prioritized.status == JobStatus.QUEUED:
+                    next_job = prioritized
+                self._next_job_id = None
+
+            if not next_job:
+                for job in self.jobs.values():
+                    if job.status == JobStatus.QUEUED:
+                        next_job = job
+                        break
             
             if next_job:
                 self._process_job(next_job)
             else:
-                # no jobs to process, sleep a bit
                 time.sleep(1)
     
     def _process_job(self, job: Job):
@@ -452,7 +461,7 @@ class JobManager:
             
             if workers == 1:
                 # sequential processing (original behavior)
-                for task in pending_tasks:
+                for i, task in enumerate(pending_tasks):
                     # check if paused or stopped
                     while self.pause_flag.is_set() and not self.stop_flag.is_set():
                         time.sleep(0.5)
@@ -463,12 +472,13 @@ class JobManager:
                     
                     self._process_task(job, task)
                     
-                    # delay between requests
-                    if job.delay_seconds > 0:
+                    # delay between requests (skip after last task)
+                    if job.delay_seconds > 0 and i < len(pending_tasks) - 1:
                         time.sleep(job.delay_seconds)
             
             else:
                 # parallel processing with thread pool
+                remaining = len(pending_tasks)
                 with ThreadPoolExecutor(max_workers=workers) as executor:
                     # submit all tasks
                     future_to_task = {
@@ -479,6 +489,7 @@ class JobManager:
                     # process as they complete
                     for future in as_completed(future_to_task):
                         task = future_to_task[future]
+                        remaining -= 1
                         
                         # check if paused or stopped
                         while self.pause_flag.is_set() and not self.stop_flag.is_set():
@@ -494,8 +505,8 @@ class JobManager:
                         except Exception as e:
                             logger.error(f"Task {task.ticker} {task.date} raised exception: {e}")
                         
-                        # small delay after each completed task
-                        if job.delay_seconds > 0:
+                        # delay between completed tasks (skip after last)
+                        if job.delay_seconds > 0 and remaining > 0:
                             time.sleep(job.delay_seconds)
             
             # check if job should be paused (token expired)
