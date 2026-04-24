@@ -72,6 +72,11 @@ DEFAULT_LIMIT = 50
 DEFAULT_RETRY_COUNT = 3
 DEFAULT_RETRY_BACKOFF = 2  # seconds
 
+# HTTP 429 — prefer finishing data over speed; clamp weird Retry-After values
+RATE_LIMIT_FALLBACK_SECONDS = float(os.environ.get('RATE_LIMIT_FALLBACK_SECONDS', '60'))
+RATE_LIMIT_MIN_SECONDS = float(os.environ.get('RATE_LIMIT_MIN_SECONDS', '5'))
+RATE_LIMIT_MAX_SECONDS = float(os.environ.get('RATE_LIMIT_MAX_SECONDS', '600'))
+
 # Token settings
 TOKEN_WARNING_THRESHOLD = 600  # seconds (10 minutes)
 

@@ -107,6 +107,21 @@
             word-break: break-word;
         }
 
+        .task-end-reason {
+            display: block;
+            font-size: 11px;
+            color: #6c757d;
+            margin-top: 2px;
+            word-break: break-word;
+        }
+        .task-end-reason.interrupted {
+            color: #d35400;
+            font-weight: 500;
+        }
+        .job-task-issues {
+            margin-top: 6px;
+        }
+
         .btn-retry {
             background: none;
             border: 1.5px solid #d97706;
@@ -477,6 +492,8 @@ function loadJobs() {
                 const percentage = progress.percentage || 0;
                 const isFailed = job.status === 'FAILED';
                 const cardClickHandler = isFailed ? `onclick="showJobDetails('${job.job_id}')"` : '';
+                const tasks = job.tasks || [];
+                const errTaskCount = tasks.filter(t => t && t.error).length;
 
                 return `
                     <div class="job-card status-${job.status.toLowerCase()}" ${cardClickHandler}>
@@ -523,6 +540,10 @@ function loadJobs() {
                             ✗ ${progress.failed || 0} failed &nbsp;
                             ⋯ ${progress.pending || 0} pending
                         </div>
+                        ${errTaskCount > 0 ? `
+                        <div class="job-info job-task-issues" style="color:#d35400; font-size:12px;">
+                            ⚠ ${errTaskCount} task(s) reported an error — open <strong>Details</strong> (ℹ) to see per-day messages
+                        </div>` : ''}
                     </div>
                 `;
             }).join('');
@@ -661,6 +682,17 @@ function escapeHtml(value) {
         .replace(/'/g, '&#39;');
 }
 
+// matches stockbit_client.FetchEndReason strings — short labels for the jobs table
+const FETCH_END_REASON_LABELS = {
+    ok_empty_page: 'Stop: empty page (no more rows for that day)',
+    ok_short_page: 'Stop: last page had fewer rows than page size (normal end)',
+    ok_before_market_open: 'Stop: before 09:00 cutoff',
+    ok_no_trade_number: 'Stop: row had no trade_number (cannot paginate further)',
+    fetch_interrupted: 'Incomplete day: later page failed (timeout/network) — not saved as complete',
+    cancelled_partial: 'Pause/cancel mid-fetch — partial data not saved',
+    cancelled: 'Cancelled before any data',
+};
+
 function taskKey(task) {
     return `${task.ticker}__${task.date}`;
 }
@@ -703,6 +735,11 @@ function buildTaskItemMarkup(jobId, task) {
     const retryButton = task.status === 'FAILED'
         ? `<button class="btn-retry-task" onclick="event.stopPropagation(); retryTask('${jobId}', '${safeTicker}', '${safeDate}')" title="Retry this task only">↺ Retry Task</button>`
         : '';
+    const er = task.end_reason;
+    const erClass = er === 'fetch_interrupted' ? 'interrupted' : '';
+    const erLine = er
+        ? `<span class="task-end-reason ${erClass}" title="${escapeHtml(er)}">${escapeHtml(FETCH_END_REASON_LABELS[er] || er)}</span>`
+        : '';
     return `
         <div class="task-item task-${task.status.toLowerCase()}" data-task-key="${escapeHtml(taskKey(task))}">
             <span class="task-date">${escapeHtml(task.date)}</span>
@@ -710,6 +747,7 @@ function buildTaskItemMarkup(jobId, task) {
             ${progressInfo}
             ${attemptsInfo}
             ${task.error ? `<span class="task-error-text">⚠ ${escapeHtml(task.error)}</span>` : ''}
+            ${erLine}
             ${retryButton}
         </div>
     `;

@@ -2,15 +2,72 @@
 Stockbit API client for fetching running trade data
 """
 from typing import Dict, List, Any, Optional, Callable
+import datetime as dt
 import requests
 import time
 import logging
+from email.utils import parsedate_to_datetime
+
 from config import (
     STOCKBIT_RUNNING_TRADE_URL, HEADERS_TEMPLATE,
-    DEFAULT_LIMIT, DEFAULT_RETRY_COUNT, DEFAULT_RETRY_BACKOFF
+    DEFAULT_LIMIT, DEFAULT_RETRY_COUNT, DEFAULT_RETRY_BACKOFF,
+    RATE_LIMIT_FALLBACK_SECONDS,
 )
 
 logger = logging.getLogger(__name__)
+
+
+class FetchEndReason:
+    """Why pagination stopped — used by jobs layer to avoid treating mid-fetch errors as a finished day."""
+
+    OK_EMPTY_PAGE = "ok_empty_page"
+    OK_SHORT_PAGE = "ok_short_page"
+    OK_BEFORE_MARKET_OPEN = "ok_before_market_open"
+    OK_NO_TRADE_NUMBER = "ok_no_trade_number"
+    # network/auth error after at least one good page — must NOT be saved as a complete day
+    FETCH_INTERRUPTED = "fetch_interrupted"
+    CANCELLED_PARTIAL = "cancelled_partial"
+    # hit rate limit mid-run — jobs layer should cooldown, not burn retries
+    RATE_LIMITED = "rate_limited"
+
+
+# normal terminal reasons: day fetch reached a defined end, not an error
+NORMAL_FETCH_END_REASONS = frozenset(
+    {
+        FetchEndReason.OK_EMPTY_PAGE,
+        FetchEndReason.OK_SHORT_PAGE,
+        FetchEndReason.OK_BEFORE_MARKET_OPEN,
+        FetchEndReason.OK_NO_TRADE_NUMBER,
+    }
+)
+
+
+def parse_retry_after_header(value: Optional[str], fallback: float) -> float:
+    """Turn Retry-After into seconds. Servers send an int or an HTTP-date; junk -> fallback."""
+    if value is None or not str(value).strip():
+        return float(fallback)
+    raw = str(value).strip()
+    if raw.isdigit():
+        return float(int(raw))
+    try:
+        n = float(raw)
+        if n >= 0:
+            return n
+    except ValueError:
+        pass
+    try:
+        parsed = parsedate_to_datetime(raw)
+        if parsed is None:
+            return float(fallback)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        wait = (parsed - dt.datetime.now(dt.timezone.utc)).total_seconds()
+        if wait > 0:
+            return wait
+    except Exception:
+        pass
+    return float(fallback)
+
 
 class StockbitClient:
     """Client for Stockbit Running Trade API"""
@@ -92,6 +149,21 @@ class StockbitClient:
                         'error': 'Access forbidden. Token might need refresh.',
                         'status_code': 403,
                         'requires_login': True
+                    }
+
+                # rate limit — let the job manager backoff; don't lump with generic 4xx
+                if response.status_code == 429:
+                    retry_after = parse_retry_after_header(
+                        response.headers.get('Retry-After'),
+                        RATE_LIMIT_FALLBACK_SECONDS,
+                    )
+                    return {
+                        'success': False,
+                        'error': 'Rate limited (429)',
+                        'status_code': 429,
+                        'rate_limited': True,
+                        'retry_after_seconds': retry_after,
+                        'response_text': response.text[:500],
                     }
                 
                 # handle other 4xx errors (don't retry)
@@ -190,11 +262,15 @@ class StockbitClient:
         all_trades = []
         page = 1
         last_trade_number = None
-        
+        # set when we break out of a successful pagination path (not fetch_interrupted)
+        end_reason: Optional[str] = None
+
         while True:
             # bail if the job manager says we're done (pause/cancel) — checked before hitting the API
             if cancel_check and cancel_check():
-                logger.info(f"Fetch stopped by cancel_check for {ticker} {date} after {len(all_trades)} record(s)")
+                logger.info(
+                    f"Fetch stopped by cancel_check for {ticker} {date} after {len(all_trades)} record(s)"
+                )
                 if all_trades:
                     return {
                         'success': True,
@@ -205,6 +281,7 @@ class StockbitClient:
                         'date': date,
                         'pages_fetched': max(0, page - 1),
                         'partial': True,
+                        'end_reason': FetchEndReason.CANCELLED_PARTIAL,
                     }
                 return {
                     'success': False,
@@ -212,6 +289,7 @@ class StockbitClient:
                     'error': 'Cancelled',
                     'ticker': ticker,
                     'date': date,
+                    'end_reason': 'cancelled',
                 }
 
             # report progress
@@ -231,78 +309,153 @@ class StockbitClient:
             
             # check for errors
             if not result.get('success'):
-                # if we already have some data, return what we got
-                if all_trades:
-                    logger.warning(f"Error on page {page}, but returning {len(all_trades)} trades collected so far")
+                # 429 — don't pretend it's a generic interrupted fetch; jobs use cooldown
+                if result.get('rate_limited'):
+                    err = result.get('error', 'Rate limited (429)')
+                    retry_after = result.get('retry_after_seconds', RATE_LIMIT_FALLBACK_SECONDS)
+                    if all_trades:
+                        logger.warning(
+                            f"429 on page {page} for {ticker} {date} after {len(all_trades)} trades — cooldown "
+                            f"(retry_after={retry_after})"
+                        )
+                        return {
+                            'success': False,
+                            'partial': True,
+                            'data': all_trades,
+                            'count': len(all_trades),
+                            'ticker': ticker,
+                            'date': date,
+                            'pages_fetched': max(0, page - 1),
+                            'error': err,
+                            'end_reason': FetchEndReason.RATE_LIMITED,
+                            'rate_limited': True,
+                            'retry_after_seconds': retry_after,
+                            'status_code': result.get('status_code', 429),
+                        }
                     return {
-                        'success': True,
+                        'success': False,
+                        'error': err,
+                        'ticker': ticker,
+                        'date': date,
+                        'rate_limited': True,
+                        'retry_after_seconds': retry_after,
+                        'status_code': result.get('status_code', 429),
+                    }
+
+                # if we already have some data, this is NOT a complete day — caller must retry, not mark COMPLETED
+                if all_trades:
+                    err = result.get('error', 'Unknown fetch error')
+                    logger.warning(
+                        f"Error on page {page} for {ticker} {date} after {len(all_trades)} trades in memory — "
+                        f"{err} (end_reason={FetchEndReason.FETCH_INTERRUPTED})"
+                    )
+                    out = {
+                        'success': False,
+                        'partial': True,
                         'data': all_trades,
                         'count': len(all_trades),
                         'ticker': ticker,
                         'date': date,
-                        'pages_fetched': page - 1,
-                        'partial': True
+                        'pages_fetched': max(0, page - 1),
+                        'error': err,
+                        'end_reason': FetchEndReason.FETCH_INTERRUPTED,
                     }
-                else:
-                    # no data yet, return the error
-                    return result
+                    for key in (
+                        'requires_login',
+                        'captcha_required',
+                        'status_code',
+                    ):
+                        if key in result:
+                            out[key] = result[key]
+                    return out
+                # no data yet, return the error as-is
+                return result
             
             # extract trades from this page
             page_trades = result.get('data', [])
             
             # no more data? we're done
             if not page_trades:
-                logger.info(f"No more trades on page {page}. Total collected: {len(all_trades)}")
+                end_reason = FetchEndReason.OK_EMPTY_PAGE
+                logger.info(
+                    f"No more trades on page {page} ({end_reason}). Total collected: {len(all_trades)}"
+                )
                 break
-            
+
             # add to our collection
             all_trades.extend(page_trades)
-            
+
             # get earliest timestamp from this page for monitoring
             earliest_time = 'N/A'
             if page_trades:
                 last_trade = page_trades[-1]
                 earliest_time = last_trade.get('time', 'N/A')
-            
-            logger.info(f"Page {page}: got {len(page_trades)} trades. Total: {len(all_trades)} | Earliest: {earliest_time}")
-            
+
+            logger.info(
+                f"Page {page}: got {len(page_trades)} trades. Total: {len(all_trades)} | Earliest: {earliest_time}"
+            )
+
             # if we got fewer than the limit, we've reached the end
             if len(page_trades) < limit:
-                logger.info(f"Got {len(page_trades)} < {limit}, reached end of data")
+                end_reason = FetchEndReason.OK_SHORT_PAGE
+                logger.info(f"Got {len(page_trades)} < {limit}, reached end of data ({end_reason})")
                 break
-            
+
             # get the last trade_number from this page for pagination
             # since we're sorting DESC, the last item is the earliest trade
             if page_trades:
                 last_trade = page_trades[-1]
-                
+
                 # check if we've reached 09:00 - stop collecting before market open
                 trade_time = last_trade.get('time', '')
                 if trade_time and trade_time <= '09:00:00':
-                    logger.info(f"Reached trade at {trade_time} (before 09:00). Stopping pagination.")
+                    end_reason = FetchEndReason.OK_BEFORE_MARKET_OPEN
+                    logger.info(
+                        f"Reached trade at {trade_time} (before 09:00). Stopping pagination ({end_reason})."
+                    )
                     break
-                
+
                 # check if trade_number exists
                 if 'trade_number' in last_trade:
                     last_trade_number = last_trade['trade_number']
                     logger.info(f"Next pagination will use trade_number: {last_trade_number}")
                 else:
-                    logger.warning(f"No trade_number field in response. Stopping pagination.")
+                    end_reason = FetchEndReason.OK_NO_TRADE_NUMBER
+                    logger.warning(
+                        f"No trade_number field in response. Stopping pagination ({end_reason})."
+                    )
                     break
-            
+
             page += 1
             
             # small delay between pages to be nice to the API
             time.sleep(0.5)
         
-        logger.info(f"[OK] Completed fetching {ticker} {date}: {len(all_trades)} total trades across {page} pages")
-        
+        if end_reason is None:
+            logger.error(
+                f"Internal bug: pagination loop exited for {ticker} {date} but end_reason was not set"
+            )
+            return {
+                "success": False,
+                "error": "Internal error: could not determine why pagination ended",
+                "ticker": ticker,
+                "date": date,
+                "end_reason": "internal_bug_no_end_reason",
+            }
+
+        logger.info(
+            f"[OK] Completed fetching {ticker} {date}: {len(all_trades)} total trades, "
+            f"pages_fetched={page}, end_reason={end_reason}"
+        )
+
         return {
             'success': True,
             'data': all_trades,
             'count': len(all_trades),
             'ticker': ticker,
             'date': date,
-            'pages_fetched': page
+            'pages_fetched': page,
+            'end_reason': end_reason,
+            'partial': False,
         }
 
