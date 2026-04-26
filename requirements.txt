@@ -9,11 +9,6 @@ pyarrow>=14.0.0
 
 # WebSocket and async
 websockets==12.0
-tornado>=6.4
-
-# Perspective for market replay (requires Python 3.9+)
-# Install with: pip install perspective-python
-perspective-python>=2.10.0
 
 # Telegram bot
 python-telegram-bot>=21.0

@@ -37,7 +37,6 @@ from storage import CSVStorage
 from jobs import JobManager
 from orderbook_manager import OrderbookManager
 from orderbook_daemon import OrderbookDaemon
-from perspective_server import start_perspective_server, get_perspective_server
 from replay_engine import get_replay_engine
 
 # Module-level globals (set in __main__)
@@ -221,18 +220,8 @@ job_manager = JobManager(stockbit_client, csv_storage)
 orderbook_manager = OrderbookManager(token_manager)
 orderbook_daemon = OrderbookDaemon(token_manager, ORDERBOOK_WATCHLIST_FILE)
 
-# Initialize Perspective server and replay engine
-perspective_server = None
-replay_engine = None
-
-def init_perspective():
-    """Initialize Perspective server and replay engine (call after app starts)"""
-    global perspective_server, replay_engine
-    if perspective_server is None:
-        perspective_server = start_perspective_server(port=8888)
-        table = perspective_server.get_table()
-        replay_engine = get_replay_engine(table)
-        logger.info("Perspective server and replay engine initialized")
+# Replay engine stays in-process now that the Python Perspective server is gone.
+replay_engine = get_replay_engine()
 
 # In-memory log storage for UI
 log_buffer = []
@@ -285,21 +274,6 @@ def files_page():
 def orderbook_page():
     """Orderbook streaming page"""
     return render_template('orderbook.html')
-
-@app.route('/replay/perspective')
-def replay_perspective():
-    """Advanced Perspective replay view"""
-    return render_template('market_replay.html')
-
-@app.route('/replay/debug')
-def replay_debug_page():
-    """Debug console for troubleshooting replay issues"""
-    return render_template('replay_debug.html')
-
-@app.route('/replay/test')
-def replay_test_page():
-    """Test Perspective CDN loading"""
-    return render_template('test_perspective.html')
 
 @app.route('/replay/orderbook')
 def replay_orderbook():
@@ -847,9 +821,6 @@ def api_replay_metadata():
 @app.route('/api/replay/load', methods=['POST'])
 def api_replay_load():
     """Load a CSV file for replay"""
-    if not replay_engine:
-        init_perspective()
-    
     # Stop any running replay before loading new data
     if replay_engine and replay_engine.running:
         logger.info("Stopping existing replay before loading new file")
@@ -1276,16 +1247,12 @@ if __name__ == '__main__':
             telegram_bot_instance.stop()
         if replay_engine:
             replay_engine.stop()
-        if perspective_server:
-            perspective_server.stop()
     
     # Only run background tasks in the reloader child (or if debug is off).
     # This prevents running two instances of the bot/daemon when using Flask reloader.
     if not DEBUG or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
         job_manager.start_worker()
-        
-        init_perspective()
-        
+
         orderbook_daemon.start()
         logger.info("Orderbook daemon started")
         

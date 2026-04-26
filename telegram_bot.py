@@ -191,8 +191,6 @@ class TelegramBot:
             return
 
         self._claim_active_instance()
-        self._build_app()
-        self._schedule_jobs()
         self.running = True
 
         def run_bot():
@@ -200,6 +198,11 @@ class TelegramBot:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 self._loop = loop
+                # Build PTB objects inside the same loop/thread that will run them.
+                # PTB creates asyncio primitives under the hood, so mixing threads here
+                # ends up with "Future attached to a different loop" noise later.
+                self._build_app()
+                self._schedule_jobs()
                 loop.run_until_complete(self._run_polling())
             except Exception as e:
                 self._last_error = str(e)

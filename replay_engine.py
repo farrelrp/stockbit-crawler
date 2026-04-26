@@ -19,8 +19,8 @@ class ReplayEngine:
     Replays orderbook data from CSV with timing control and change calculation
     """
     
-    def __init__(self, perspective_table):
-        self.table = perspective_table
+    def __init__(self, table=None):
+        self.table = table
         self.thread = None
         self.running = False
         self.paused = False
@@ -125,7 +125,7 @@ class ReplayEngine:
     
     def _replay_loop(self):
         """
-        Main replay loop that reads CSV and pushes to Perspective
+        Main replay loop that reads CSV and updates in-memory state
         Respects original timing with speed multiplier
         """
         logger.info(f"Starting replay loop: {self.total_rows} rows, speed={self.speed_multiplier}x")
@@ -176,7 +176,7 @@ class ReplayEngine:
                     current_row['lot_size']
                 )
                 
-                # Prepare update for Perspective
+                # Keep the payload shape around in case we attach a table again later.
                 update_data = {
                     'timestamp': current_row['timestamp'], # Add timestamp
                     'price': current_row['price'],
@@ -186,13 +186,16 @@ class ReplayEngine:
                     'change': change
                 }
                 
-                # Push to Perspective table (thread-safe)
+                # Optional table sink for older Perspective-based flows.
                 if self.table:
                     self.table.update([update_data])
                     
                     # Log every 100th update for debugging
                     if self.current_index % 100 == 0:
-                        logger.debug(f"Replay progress: {self.current_index}/{self.total_rows} - Last: {current_row['side']} @ {current_row['price']} x {current_row['lots']}")
+                        logger.debug(
+                            f"Replay progress: {self.current_index}/{self.total_rows} - "
+                            f"Last: {current_row['side']} @ {current_row['price']} x {current_row['lot_size']}"
+                        )
                 
                 # Calculate sleep time if not the last row
                 if self.current_index < self.total_rows - 1:
@@ -325,7 +328,7 @@ class ReplayEngine:
                 if i < len(self.data_rows):
                     row = self.data_rows[i]
                     key = (row['price'], row['side'])
-                    self.state[key] = row['lots']
+                    self.state[key] = row['lot_size']
             self.current_index = position
             
             # Update timestamps from the last row processed
@@ -356,7 +359,7 @@ class ReplayEngine:
             for i in range(position):
                 row = self.data_rows[i]
                 key = (row['price'], row['side'])
-                self.state[key] = row['lots']
+                self.state[key] = row['lot_size']
                 
                 # Update timestamps
                 if row['side'] == 'BID':
@@ -414,11 +417,11 @@ class ReplayEngine:
 _replay_engine = None
 
 
-def get_replay_engine(perspective_table=None):
+def get_replay_engine(table=None):
     """Get or create the global replay engine instance"""
     global _replay_engine
     if _replay_engine is None:
-        if perspective_table is None:
-            raise ValueError("perspective_table required for first initialization")
-        _replay_engine = ReplayEngine(perspective_table)
+        _replay_engine = ReplayEngine(table=table)
+    elif table is not None and _replay_engine.table is None:
+        _replay_engine.table = table
     return _replay_engine
