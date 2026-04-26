@@ -666,6 +666,24 @@ code {
 .task-failed { border-color: var(--error-color); background: #fef2f2; }
 .task-running { border-color: var(--primary-color); background: #eff6ff; }
 
+.task-skipped { border-color: #d1d5db; background: #f9fafb; color: #6b7280; }
+.task-skip-reason {
+    display: inline-block;
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-top: 2px;
+}
+.skip-weekend {
+    background: #e0e7ff;
+    color: #4338ca;
+}
+.skip-holiday {
+    background: #fef3c7;
+    color: #92400e;
+}
+
 .task-date {
     font-weight: 600;
 }

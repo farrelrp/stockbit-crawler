@@ -1,6 +1,8 @@
 """
 Job scheduler and manager for fetching trade data
 """
+import json
+import os
 import threading
 import time
 import uuid
@@ -21,20 +23,32 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
-# region agent log
-import json as _json
-def _dbg(location, message, data=None, hyp=None):
-    import time as _t
-    try:
-        with open('debug-295f65.log', 'a') as _f:
-            _f.write(_json.dumps({'sessionId':'295f65','timestamp':int(_t.time()*1000),'location':location,'message':message,'data':data or {},'hypothesisId':hyp or '','runId':'post-fix'}) + '\n')
-    except Exception:
-        pass
-# endregion
-
 # clamp for max_backoff_seconds from API/FE — still lets you go pretty patient
 _MIN_BACKOFF_CAP = 5.0
 _MAX_BACKOFF_CAP = 24 * 3600.0
+
+
+def _load_holidays() -> Dict[str, str]:
+    """Map YYYY-MM-DD -> label from holiday.json (same folder as this module)."""
+    path = os.path.join(os.path.dirname(__file__), 'holiday.json')
+    try:
+        with open(path, encoding='utf-8') as f:
+            return {h['date']: h['reason'] for h in json.load(f)}
+    except Exception as e:
+        logger.warning("Could not load holiday.json: %s", e)
+        return {}
+
+
+# loaded once — restart picks up file edits
+_HOLIDAYS: Dict[str, str] = _load_holidays()
+
+
+def _get_skip_reason(date_str: str) -> Optional[str]:
+    """Non-trading day label: weekend first, else exchange holiday from JSON."""
+    d = datetime.strptime(date_str, '%Y-%m-%d')
+    if d.weekday() >= 5:  # Sat/Sun
+        return 'Weekend'
+    return _HOLIDAYS.get(date_str)
 
 
 class JobStatus(Enum):
@@ -69,6 +83,8 @@ class Task:
     pages_fetched: int = 0
     current_page: int = 0  # real-time page being fetched
     attempts: int = 0
+    # weekend / holiday label for SKIPPED tasks — not in SQLite, re-derived on load
+    skip_reason: Optional[str] = None
     # after a failed attempt, don't run again until this monotonic time (parallel-friendly)
     retry_after_monotonic: Optional[float] = field(default=None, repr=False)
 
@@ -301,6 +317,12 @@ class JobManager:
         task.status = TaskStatus.PENDING
         task.retry_after_monotonic = time.monotonic() + backoff
         task.current_page = 0
+        # tack the retry note onto the existing error so the UI shows it's not stuck
+        retry_note = f"Retrying in {backoff:.0f}s (attempt {task.attempts + 1})..."
+        if task.error:
+            task.error = f"{task.error} — {retry_note}"
+        else:
+            task.error = retry_note
         logger.info(
             "Back-off %.1fs (cap %.1fs) before retry attempt %s for %s %s",
             backoff,
@@ -360,7 +382,18 @@ class JobManager:
                 tasks = []
                 for ticker in job_data['tickers']:
                     for d in dates:
-                        tasks.append(Task(ticker=ticker, date=d))
+                        sr = _get_skip_reason(d)
+                        if sr:
+                            tasks.append(
+                                Task(
+                                    ticker=ticker,
+                                    date=d,
+                                    status=TaskStatus.SKIPPED,
+                                    skip_reason=sr,
+                                )
+                            )
+                        else:
+                            tasks.append(Task(ticker=ticker, date=d))
 
                 pw = int(job_data.get('parallel_workers', 1) or 1)
                 mb = float(job_data.get('max_backoff_seconds', 180) or 180)
@@ -396,6 +429,13 @@ class JobManager:
                         t.error = row.get('error')
                         t.records_fetched = row.get('records_fetched') or 0
                         t.attempts = row.get('attempts') or 0
+
+                # refresh skip labels from calendar; bump stale PENDING non-trading rows to SKIPPED
+                for t in job.tasks:
+                    sr = _get_skip_reason(t.date)
+                    t.skip_reason = sr
+                    if sr and t.status == TaskStatus.PENDING:
+                        t.status = TaskStatus.SKIPPED
 
                 self.jobs[job.job_id] = job
                 loaded_count += 1
@@ -457,7 +497,18 @@ class JobManager:
         tasks = []
         for ticker in tickers:
             for date in dates:
-                tasks.append(Task(ticker=ticker, date=date))
+                sr = _get_skip_reason(date)
+                if sr:
+                    tasks.append(
+                        Task(
+                            ticker=ticker,
+                            date=date,
+                            status=TaskStatus.SKIPPED,
+                            skip_reason=sr,
+                        )
+                    )
+                else:
+                    tasks.append(Task(ticker=ticker, date=date))
 
         job = Job(
             job_id=job_id,
@@ -495,9 +546,6 @@ class JobManager:
     def pause_job(self, job_id: str):
         """Pause a job"""
         job = self.jobs.get(job_id)
-        # region agent log
-        _dbg('jobs.py:pause_job', 'pause_job called', {'job_id':job_id,'job_status':job.status.value if job else None,'current_job_id':self.current_job_id,'pause_flag':self.pause_flag.is_set(),'worker_alive':bool(self.worker_thread and self.worker_thread.is_alive())}, hyp='H-A')
-        # endregion
         if job and job.status == JobStatus.RUNNING:
             job.status = JobStatus.PAUSED
             self.pause_flag.set()
@@ -506,9 +554,6 @@ class JobManager:
     def resume_job(self, job_id: str):
         """Resume a paused job"""
         job = self.jobs.get(job_id)
-        # region agent log
-        _dbg('jobs.py:resume_job', 'resume_job called', {'job_id':job_id,'job_status':job.status.value if job else None,'current_job_id':self.current_job_id,'pause_flag':self.pause_flag.is_set(),'will_be':'RUNNING' if self.current_job_id==job_id else 'QUEUED'}, hyp='H-B')
-        # endregion
         if job and job.status == JobStatus.PAUSED:
             if self.current_job_id == job_id:
                 job.status = JobStatus.RUNNING
@@ -524,9 +569,6 @@ class JobManager:
     def play_queued_job(self, job_id: str) -> bool:
         """Kick a queued job so worker starts processing it next."""
         job = self.jobs.get(job_id)
-        # region agent log
-        _dbg('jobs.py:play_queued_job', 'play_queued_job called', {'job_id':job_id,'job_status':job.status.value if job else None,'current_job_id':self.current_job_id,'pause_flag':self.pause_flag.is_set(),'worker_alive':bool(self.worker_thread and self.worker_thread.is_alive()),'next_job_id_before':self._next_job_id}, hyp='H-A,H-C')
-        # endregion
         if not job or job.status != JobStatus.QUEUED:
             return False
 
@@ -557,11 +599,7 @@ class JobManager:
             job.error = 'Cancelled by user'
             self._persist_job(job)
             self.pause_flag.set()
-            will_clear = not any(j.status == JobStatus.PAUSED for j in self.jobs.values())
-            # region agent log
-            _dbg('jobs.py:cancel_job', 'cancel_job: pause_flag clear decision', {'job_id':job_id,'will_clear_flag':will_clear,'other_paused_jobs':[j.job_id for j in self.jobs.values() if j.status==JobStatus.PAUSED and j.job_id!=job_id]}, hyp='H-D')
-            # endregion
-            if will_clear:
+            if not any(j.status == JobStatus.PAUSED for j in self.jobs.values()):
                 self.pause_flag.clear()
             logger.info(f"Job {job_id} cancelled")
 
@@ -676,9 +714,6 @@ class JobManager:
                     prioritized = self.jobs.get(self._next_job_id)
                     if prioritized and prioritized.status == JobStatus.QUEUED:
                         next_job = prioritized
-                    # region agent log
-                    _dbg('jobs.py:_worker_loop', '_next_job_id consumed', {'next_job_id':self._next_job_id,'found':next_job is not None,'prioritized_status':prioritized.status.value if prioritized else None}, hyp='H-C')
-                    # endregion
                     self._next_job_id = None
 
                 if not next_job:
@@ -718,10 +753,6 @@ class JobManager:
         try:
             if workers == 1:
                 while self._job_has_pending_tasks_any(job):
-                    # region agent log
-                    if self.pause_flag.is_set() and job.status == JobStatus.PAUSED:
-                        _dbg('jobs.py:_process_job:pause_loop', 'worker entering pause spin-wait', {'job_id':job.job_id,'pause_flag':True,'next_job_id':self._next_job_id,'worker_alive':bool(self.worker_thread and self.worker_thread.is_alive())}, hyp='H-A')
-                    # endregion
                     while (
                         not self.stop_flag.is_set()
                         and job.status == JobStatus.PAUSED
@@ -1021,16 +1052,21 @@ class JobManager:
                 if task.attempts > 0:
                     task.attempts -= 1
                 task.current_page = 0
-                task.error = None
                 task.end_reason = None
+                raw_wait = result.get('retry_after_seconds')
+                try:
+                    wait_secs = max(RATE_LIMIT_MIN_SECONDS, min(float(raw_wait), RATE_LIMIT_MAX_SECONDS))
+                except (TypeError, ValueError):
+                    wait_secs = float(RATE_LIMIT_FALLBACK_SECONDS)
+                task.error = f"Rate limited — retrying in {wait_secs:.0f}s..."
                 self._extend_job_cooldown(
                     job,
-                    result.get('retry_after_seconds'),
+                    raw_wait,
                     f"HTTP 429 {task.ticker} {task.date}",
                 )
                 logger.info(
                     f"Rate limited {task.ticker} {task.date} — leaving task PENDING "
-                    f"(retry_after={result.get('retry_after_seconds')!r})"
+                    f"(retry_after={raw_wait!r})"
                 )
                 return
 
@@ -1058,7 +1094,7 @@ class JobManager:
                 n = result.get('count', 0)
                 task.end_reason = FetchEndReason.FETCH_INTERRUPTED
                 task.error = (
-                    f"Day incomplete — fetch error after {n} row(s) in memory (not saved). {error}"
+                    f"Fetch cut short mid-page — {n} row(s) collected but not saved. Cause: {error}"
                 )
                 logger.error(
                     f"Fetch interrupted for {task.ticker} {task.date} (attempt {task.attempts}): {error} "

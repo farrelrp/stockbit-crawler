@@ -29,7 +29,7 @@ from config import (
     SECRET_KEY, DEBUG, LOG_FILE, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
     LOG_MEMORY_LINES, DEFAULT_DELAY_SECONDS, DEFAULT_LIMIT, ORDERBOOK_DIR,
     ORDERBOOK_WATCHLIST_FILE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
-    TELEGRAM_HEARTBEAT_MINUTES
+    TELEGRAM_HEARTBEAT_MINUTES, AUTO_START_DAEMON
 )
 from auth import TokenManager
 from stockbit_client import StockbitClient
@@ -1258,52 +1258,55 @@ if __name__ == '__main__':
     if not DEBUG or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
         job_manager.start_worker()
 
-        orderbook_daemon.start()
-        logger.info("Orderbook daemon started")
-        
-        # -- optional Google Drive uploader --
-        try:
-            from config import (
-                GDRIVE_OAUTH_CLIENT_FILE, GDRIVE_OAUTH_TOKEN_FILE,
-                GDRIVE_SERVICE_ACCOUNT_FILE, GDRIVE_FOLDER_ID,
-                GDRIVE_DELETE_AFTER_UPLOAD,
-            )
-            if GDRIVE_FOLDER_ID:
-                from gdrive_uploader import GDriveUploader
-                gdrive_uploader = GDriveUploader(
-                    folder_id=GDRIVE_FOLDER_ID,
-                    delete_after_upload=GDRIVE_DELETE_AFTER_UPLOAD,
-                    oauth_client_file=GDRIVE_OAUTH_CLIENT_FILE,
-                    oauth_token_file=GDRIVE_OAUTH_TOKEN_FILE,
-                    service_account_file=GDRIVE_SERVICE_ACCOUNT_FILE,
-                )
-                logger.info("Google Drive uploader initialised")
-            else:
-                logger.warning("GDrive not configured: GDRIVE_FOLDER_ID is missing from .env")
-        except Exception as e:
-            logger.warning(f"Google Drive upload disabled: {e}", exc_info=True)
+        if AUTO_START_DAEMON:
+            orderbook_daemon.start()
+            logger.info("Orderbook daemon started")
 
-        if TELEGRAM_BOT_TOKEN:
+            # -- optional Google Drive uploader --
             try:
-                from telegram_bot import TelegramBot
-                telegram_bot_instance = TelegramBot(
-                    token=TELEGRAM_BOT_TOKEN,
-                    chat_id=TELEGRAM_CHAT_ID,
-                    daemon=orderbook_daemon,
-                    heartbeat_minutes=TELEGRAM_HEARTBEAT_MINUTES,
-                    job_manager=job_manager,
-                    gdrive_uploader=gdrive_uploader,
-                    orderbook_dir=ORDERBOOK_DIR,
+                from config import (
+                    GDRIVE_OAUTH_CLIENT_FILE, GDRIVE_OAUTH_TOKEN_FILE,
+                    GDRIVE_SERVICE_ACCOUNT_FILE, GDRIVE_FOLDER_ID,
+                    GDRIVE_DELETE_AFTER_UPLOAD,
                 )
-                telegram_bot_instance.start()
-                logger.info("Telegram bot started")
-            except ImportError:
-                logger.warning("python-telegram-bot not installed. Telegram bot disabled.")
+                if GDRIVE_FOLDER_ID:
+                    from gdrive_uploader import GDriveUploader
+                    gdrive_uploader = GDriveUploader(
+                        folder_id=GDRIVE_FOLDER_ID,
+                        delete_after_upload=GDRIVE_DELETE_AFTER_UPLOAD,
+                        oauth_client_file=GDRIVE_OAUTH_CLIENT_FILE,
+                        oauth_token_file=GDRIVE_OAUTH_TOKEN_FILE,
+                        service_account_file=GDRIVE_SERVICE_ACCOUNT_FILE,
+                    )
+                    logger.info("Google Drive uploader initialised")
+                else:
+                    logger.warning("GDrive not configured: GDRIVE_FOLDER_ID is missing from .env")
             except Exception as e:
-                logger.error(f"Failed to start Telegram bot: {e}", exc_info=True)
+                logger.warning(f"Google Drive upload disabled: {e}", exc_info=True)
+
+            if TELEGRAM_BOT_TOKEN:
+                try:
+                    from telegram_bot import TelegramBot
+                    telegram_bot_instance = TelegramBot(
+                        token=TELEGRAM_BOT_TOKEN,
+                        chat_id=TELEGRAM_CHAT_ID,
+                        daemon=orderbook_daemon,
+                        heartbeat_minutes=TELEGRAM_HEARTBEAT_MINUTES,
+                        job_manager=job_manager,
+                        gdrive_uploader=gdrive_uploader,
+                        orderbook_dir=ORDERBOOK_DIR,
+                    )
+                    telegram_bot_instance.start()
+                    logger.info("Telegram bot started")
+                except ImportError:
+                    logger.warning("python-telegram-bot not installed. Telegram bot disabled.")
+                except Exception as e:
+                    logger.error(f"Failed to start Telegram bot: {e}", exc_info=True)
+            else:
+                logger.info("Telegram bot not configured (no TELEGRAM_BOT_TOKEN). Set it in .env to enable.")
         else:
-            logger.info("Telegram bot not configured (no TELEGRAM_BOT_TOKEN). Set it in .env to enable.")
-        
+            logger.info("AUTO_START_DAEMON=false — skipping daemon and bot (run run_daemon.py separately)")
+
         atexit.register(_cleanup)
     else:
         logger.info("Skipping background tasks in reloader monitor process")

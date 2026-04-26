@@ -128,3 +128,7 @@ GDRIVE_DELETE_AFTER_UPLOAD = os.environ.get(
 # If true, use OAuth user credentials instead of a service account.
 # Requires a token file created by gdrive_oauth_setup.py.
 GDRIVE_USE_OAUTH = os.environ.get('GDRIVE_USE_OAUTH', 'false').lower() == 'true'
+
+# Set to true on VPS so app.py boots the daemon + bot automatically.
+# Leave false (or unset) on local — you control when to run run_daemon.py yourself.
+AUTO_START_DAEMON = os.environ.get('AUTO_START_DAEMON', 'false').lower() == 'true'

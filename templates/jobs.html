@@ -722,6 +722,11 @@ function getTaskDisplay(task) {
     let statusDisplay = task.status;
     let progressInfo = '';
 
+    // badge shows weekend/holiday — no need to repeat SKIPPED text
+    if (task.status === 'SKIPPED' && task.skip_reason) {
+        statusDisplay = '';
+    }
+
     if (task.status === 'RUNNING' && task.current_page > 0) {
         statusDisplay = `RUNNING (Page ${task.current_page})`;
         progressInfo = task.records_fetched > 0
@@ -750,12 +755,17 @@ function buildTaskItemMarkup(jobId, task) {
     const erLine = er
         ? `<span class="task-end-reason ${erClass}" title="${escapeHtml(er)}">${escapeHtml(FETCH_END_REASON_LABELS[er] || er)}</span>`
         : '';
+    const skipCls = task.skip_reason === 'Weekend' ? 'skip-weekend' : 'skip-holiday';
+    const skipBadge = task.skip_reason
+        ? `<span class="task-skip-reason ${skipCls}" title="${escapeHtml(task.skip_reason)}">${escapeHtml(task.skip_reason)}</span>`
+        : '';
     return `
         <div class="task-item task-${task.status.toLowerCase()}" data-task-key="${escapeHtml(taskKey(task))}">
             <span class="task-date">${escapeHtml(task.date)}</span>
             <span class="task-status">${escapeHtml(statusDisplay)}</span>
             ${progressInfo}
             ${attemptsInfo}
+            ${skipBadge}
             ${task.error ? `<span class="task-error-text">⚠ ${escapeHtml(task.error)}</span>` : ''}
             ${erLine}
             ${retryButton}
@@ -765,11 +775,14 @@ function buildTaskItemMarkup(jobId, task) {
 
 function buildTickerMarkup(jobId, ticker, tasks) {
     const tickerCompleted = tasks.filter(t => t.status === 'COMPLETED').length;
+    const tickerSkipped = tasks.filter(t => t.status === 'SKIPPED').length;
     const tickerFailed = tasks.filter(t => t.status === 'FAILED').length;
+    const skipPart = tickerSkipped > 0 ? `, ${tickerSkipped} skipped` : '';
+    const failPart = tickerFailed > 0 ? `, <span style="color:#dc3545">${tickerFailed} failed</span>` : '';
     return `
         <div class="ticker-tasks" data-ticker="${escapeHtml(ticker)}">
             <h4 data-role="ticker-header">
-                ${escapeHtml(ticker)} (${tickerCompleted}/${tasks.length} completed${tickerFailed > 0 ? `, <span style="color:#dc3545">${tickerFailed} failed</span>` : ''})
+                ${escapeHtml(ticker)} (${tickerCompleted}/${tasks.length} completed${skipPart}${failPart})
             </h4>
             <div class="tasks-grid">
                 ${tasks.map(task => buildTaskItemMarkup(jobId, task)).join('')}
