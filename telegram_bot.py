@@ -347,7 +347,7 @@ class TelegramBot:
             "/upload 2026-02-04 - Upload specific date\n\n"
             "*Historical Trade Jobs*\n"
             "/jobs - List recent jobs\n"
-            "/newjob BBCA,TLKM 2026-01-01 2026-01-31 - Create job\n"
+            "/newjob BBCA,TLKM 2026-01-01 2026-01-31 [delay] [limit] [max_backoff_sec] - Create job\n"
             "/jobstatus <id> - Job details\n"
             "/pausejob <id> - Pause a job\n"
             "/resumejob <id> - Resume a job\n"
@@ -490,8 +490,12 @@ class TelegramBot:
         result = self.daemon.set_token_and_reconnect(bearer_token)
 
         if result.get('success'):
+            resumed = 0
+            if self.job_manager:
+                resumed = self.job_manager.auto_resume_paused_jobs()
+            extra = f"\n\nResumed *{resumed}* paused job(s)." if resumed else ""
             await update.message.reply_text(
-                f"*Token Updated*\n\n{result.get('message', '')}",
+                f"*Token Updated*\n\n{result.get('message', '')}{extra}",
                 parse_mode="Markdown"
             )
         else:
@@ -576,7 +580,7 @@ class TelegramBot:
 
         status_icons = {
             'QUEUED': '🔵', 'RUNNING': '🟢', 'PAUSED': '🟡',
-            'COMPLETED': '✅', 'FAILED': '🔴',
+            'COMPLETED': '✅', 'FAILED': '🔴', 'CANCELLED': '⚫',
         }
 
         text = f"*Recent Jobs ({len(jobs_list)})*\n\n"
@@ -606,9 +610,9 @@ class TelegramBot:
         if len(context.args) < 3:
             await update.message.reply_text(
                 "*Create Historical Trade Job*\n\n"
-                "Usage: `/newjob TICKERS FROM TO [delay] [limit]`\n\n"
+                "Usage: `/newjob TICKERS FROM TO [delay] [limit] [max_backoff_sec]`\n\n"
                 "Example:\n`/newjob BBCA,TLKM 2026-01-01 2026-01-31`\n"
-                "`/newjob BBRI 2026-02-01 2026-02-15 2 100`",
+                "`/newjob BBRI 2026-02-01 2026-02-15 2 100 180`",
                 parse_mode="Markdown"
             )
             return
@@ -618,6 +622,7 @@ class TelegramBot:
         until_date = context.args[2]
         delay = float(context.args[3]) if len(context.args) > 3 else 3.0
         limit = int(context.args[4]) if len(context.args) > 4 else 50
+        max_backoff = float(context.args[5]) if len(context.args) > 5 else 180.0
 
         try:
             datetime.strptime(from_date, '%Y-%m-%d')
@@ -632,6 +637,7 @@ class TelegramBot:
             until_date=until_date,
             delay_seconds=delay,
             limit=limit,
+            max_backoff_seconds=max_backoff,
         )
 
         job = self.job_manager.get_job(job_id)

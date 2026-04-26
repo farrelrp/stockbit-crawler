@@ -264,6 +264,9 @@ class StockbitClient:
         last_trade_number = None
         # set when we break out of a successful pagination path (not fetch_interrupted)
         end_reason: Optional[str] = None
+        # a short page doesn't always mean "we're at the end" — if the follow-up with trade_number
+        # is empty, then we're done; if it has rows, keep going
+        short_page_awaiting_confirm = False
 
         while True:
             # bail if the job manager says we're done (pause/cancel) — checked before hitting the API
@@ -374,60 +377,66 @@ class StockbitClient:
             # extract trades from this page
             page_trades = result.get('data', [])
             
-            # no more data? we're done
+            # no more data on this request
             if not page_trades:
-                end_reason = FetchEndReason.OK_EMPTY_PAGE
-                logger.info(
-                    f"No more trades on page {page} ({end_reason}). Total collected: {len(all_trades)}"
-                )
+                # n+1 probe after a short page: API returns [] when there is nothing older — that is a normal end
+                if short_page_awaiting_confirm:
+                    end_reason = FetchEndReason.OK_SHORT_PAGE
+                    logger.info(
+                        f"Probe page {page} after short page: empty — confirmed no more data ({end_reason}). "
+                        f"Total collected: {len(all_trades)}"
+                    )
+                else:
+                    end_reason = FetchEndReason.OK_EMPTY_PAGE
+                    logger.info(
+                        f"No more trades on page {page} ({end_reason}). Total collected: {len(all_trades)}"
+                    )
                 break
+
+            # n+1 check returned more rows — day wasn't finished at the short page
+            if short_page_awaiting_confirm:
+                short_page_awaiting_confirm = False
 
             # add to our collection
             all_trades.extend(page_trades)
 
             # get earliest timestamp from this page for monitoring
-            earliest_time = 'N/A'
-            if page_trades:
-                last_trade = page_trades[-1]
-                earliest_time = last_trade.get('time', 'N/A')
+            last_trade = page_trades[-1]
+            earliest_time = last_trade.get('time', 'N/A')
 
             logger.info(
                 f"Page {page}: got {len(page_trades)} trades. Total: {len(all_trades)} | Earliest: {earliest_time}"
             )
 
-            # if we got fewer than the limit, we've reached the end
-            if len(page_trades) < limit:
-                end_reason = FetchEndReason.OK_SHORT_PAGE
-                logger.info(f"Got {len(page_trades)} < {limit}, reached end of data ({end_reason})")
+            # check if we've reached 09:00 - stop collecting before market open (applies to full or short pages)
+            trade_time = last_trade.get('time', '')
+            if trade_time and trade_time <= '09:00:00':
+                end_reason = FetchEndReason.OK_BEFORE_MARKET_OPEN
+                logger.info(
+                    f"Reached trade at {trade_time} (before 09:00). Stopping pagination ({end_reason})."
+                )
                 break
 
-            # get the last trade_number from this page for pagination
-            # since we're sorting DESC, the last item is the earliest trade
-            if page_trades:
-                last_trade = page_trades[-1]
+            if 'trade_number' not in last_trade:
+                end_reason = FetchEndReason.OK_NO_TRADE_NUMBER
+                logger.warning(
+                    f"No trade_number field in response. Stopping pagination ({end_reason})."
+                )
+                break
 
-                # check if we've reached 09:00 - stop collecting before market open
-                trade_time = last_trade.get('time', '')
-                if trade_time and trade_time <= '09:00:00':
-                    end_reason = FetchEndReason.OK_BEFORE_MARKET_OPEN
-                    logger.info(
-                        f"Reached trade at {trade_time} (before 09:00). Stopping pagination ({end_reason})."
-                    )
-                    break
+            last_trade_number = last_trade['trade_number']
+            logger.info(f"Next pagination will use trade_number: {last_trade_number}")
 
-                # check if trade_number exists
-                if 'trade_number' in last_trade:
-                    last_trade_number = last_trade['trade_number']
-                    logger.info(f"Next pagination will use trade_number: {last_trade_number}")
-                else:
-                    end_reason = FetchEndReason.OK_NO_TRADE_NUMBER
-                    logger.warning(
-                        f"No trade_number field in response. Stopping pagination ({end_reason})."
-                    )
-                    break
+            # fewer than limit might still have older trades — one more page will tell us
+            if len(page_trades) < limit:
+                short_page_awaiting_confirm = True
+                logger.info(
+                    f"Got {len(page_trades)} < {limit} — will probe one more page with "
+                    f"trade_number {last_trade_number} before calling it done"
+                )
 
             page += 1
-            
+
             # small delay between pages to be nice to the API
             time.sleep(0.5)
         

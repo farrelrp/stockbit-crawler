@@ -7,7 +7,7 @@ import uuid
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from enum import Enum
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict, field, fields
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED, Future
 import logging
 from database import JobDatabase
@@ -21,6 +21,22 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+# region agent log
+import json as _json
+def _dbg(location, message, data=None, hyp=None):
+    import time as _t
+    try:
+        with open('debug-295f65.log', 'a') as _f:
+            _f.write(_json.dumps({'sessionId':'295f65','timestamp':int(_t.time()*1000),'location':location,'message':message,'data':data or {},'hypothesisId':hyp or '','runId':'post-fix'}) + '\n')
+    except Exception:
+        pass
+# endregion
+
+# clamp for max_backoff_seconds from API/FE — still lets you go pretty patient
+_MIN_BACKOFF_CAP = 5.0
+_MAX_BACKOFF_CAP = 24 * 3600.0
+
+
 class JobStatus(Enum):
     """Job status enum"""
     QUEUED = 'QUEUED'
@@ -28,6 +44,8 @@ class JobStatus(Enum):
     PAUSED = 'PAUSED'
     COMPLETED = 'COMPLETED'
     FAILED = 'FAILED'
+    CANCELLED = 'CANCELLED'
+
 
 class TaskStatus(Enum):
     """Individual task status"""
@@ -36,6 +54,7 @@ class TaskStatus(Enum):
     COMPLETED = 'COMPLETED'
     FAILED = 'FAILED'
     SKIPPED = 'SKIPPED'
+
 
 @dataclass
 class Task:
@@ -50,6 +69,9 @@ class Task:
     pages_fetched: int = 0
     current_page: int = 0  # real-time page being fetched
     attempts: int = 0
+    # after a failed attempt, don't run again until this monotonic time (parallel-friendly)
+    retry_after_monotonic: Optional[float] = field(default=None, repr=False)
+
 
 @dataclass
 class Job:
@@ -61,7 +83,8 @@ class Job:
     delay_seconds: float
     limit: int
     parallel_workers: int = 1  # number of stocks to process in parallel
-    max_retries: int = 2       # auto-retry failed tasks this many times
+    # cap for exponential-ish backoff between retries (seconds); tasks retry forever otherwise
+    max_backoff_seconds: float = 180.0
     status: JobStatus = JobStatus.QUEUED
     created_at: str = field(default_factory=lambda: now_wib().isoformat())
     started_at: Optional[str] = None
@@ -71,16 +94,33 @@ class Job:
     # runtime only — HTTP 429 backoff (not persisted; monotonic clock)
     cooldown_until_monotonic: Optional[float] = field(default=None, repr=False)
     cooldown_reason: Optional[str] = field(default=None, repr=False)
-    
+    # Telegram milestone spam guard (25/50/75%) — must be thread-safe in parallel mode
+    last_milestone_pct: int = 0
+    progress_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dict for JSON serialization"""
-        data = asdict(self)
-        data.pop('cooldown_until_monotonic', None)
-        data.pop('cooldown_reason', None)
-        data['status'] = self.status.value
-        # convert task status enums
-        for task_dict in data['tasks']:
-            task_dict['status'] = task_dict['status'].value if isinstance(task_dict['status'], TaskStatus) else task_dict['status']
+        """Convert to dict for JSON serialization (skip non-serializable lock + monotonic fields)."""
+        skip = frozenset({
+            'cooldown_until_monotonic', 'cooldown_reason', 'progress_lock',
+            'last_milestone_pct',  # internal Telegram milestone guard only
+        })
+        data: Dict[str, Any] = {}
+        for f in fields(self):
+            if f.name in skip:
+                continue
+            if f.name == 'tasks':
+                data['tasks'] = []
+                for t in self.tasks:
+                    td = asdict(t)
+                    td['status'] = t.status.value
+                    td.pop('retry_after_monotonic', None)
+                    data['tasks'].append(td)
+                continue
+            v = getattr(self, f.name)
+            if f.name == 'status':
+                data['status'] = v.value if isinstance(v, JobStatus) else v
+            else:
+                data[f.name] = v
         # so the UI can show "waiting on rate limit" without digging logs
         if self.cooldown_until_monotonic is not None:
             rem = self.cooldown_until_monotonic - time.monotonic()
@@ -88,14 +128,14 @@ class Job:
                 data['cooldown_seconds_remaining'] = round(rem, 1)
                 data['cooldown_reason'] = self.cooldown_reason
         return data
-    
+
     def get_progress(self) -> Dict[str, Any]:
         """Calculate job progress"""
         total = len(self.tasks)
         completed = sum(1 for t in self.tasks if t.status in [TaskStatus.COMPLETED, TaskStatus.SKIPPED])
         failed = sum(1 for t in self.tasks if t.status == TaskStatus.FAILED)
         running = sum(1 for t in self.tasks if t.status == TaskStatus.RUNNING)
-        
+
         return {
             'total': total,
             'completed': completed,
@@ -105,9 +145,10 @@ class Job:
             'percentage': round((completed / total * 100) if total > 0 else 0, 1)
         }
 
+
 class JobManager:
     """Manages job queue and execution"""
-    
+
     def __init__(self, stockbit_client, csv_storage):
         self.client = stockbit_client
         self.storage = csv_storage
@@ -123,7 +164,7 @@ class JobManager:
         # external notification callback — set by TelegramBot or others
         # signature: callback(event: str, data: dict)
         self._notification_callback = None
-        
+
         # load persisted jobs on startup
         self._load_jobs_from_db()
 
@@ -144,8 +185,29 @@ class JobManager:
                 logger.error(f"Notification callback error ({event}): {e}")
 
     def _is_job_cancelled(self, job: Job) -> bool:
-        # FAILED during a run is effectively "stop now" (user cancel uses this status)
-        return job.status == JobStatus.FAILED
+        # stop workers when user cancelled or the job hit a hard failure
+        return job.status in (JobStatus.CANCELLED, JobStatus.FAILED)
+
+    @staticmethod
+    def _task_ready_to_run(task: Task) -> bool:
+        if task.status != TaskStatus.PENDING:
+            return False
+        ra = task.retry_after_monotonic
+        if ra is not None and time.monotonic() < ra:
+            return False
+        return True
+
+    @staticmethod
+    def _job_has_pending_tasks_any(job: Job) -> bool:
+        return any(t.status == TaskStatus.PENDING for t in job.tasks)
+
+    def _pick_next_queued_job(self) -> Optional[Job]:
+        """FIFO by created_at among QUEUED jobs (dict order alone isn't enough long-term)."""
+        queued = [j for j in self.jobs.values() if j.status == JobStatus.QUEUED]
+        if not queued:
+            return None
+        queued.sort(key=lambda j: j.created_at)
+        return queued[0]
 
     def _extend_job_cooldown(
         self,
@@ -180,8 +242,7 @@ class JobManager:
             if self._is_job_cancelled(job):
                 return
             while (
-                self.pause_flag.is_set()
-                and not self.stop_flag.is_set()
+                not self.stop_flag.is_set()
                 and job.status == JobStatus.PAUSED
             ):
                 time.sleep(0.5)
@@ -203,54 +264,146 @@ class JobManager:
 
             time.sleep(0.5)
 
-    @staticmethod
-    def _job_has_pending_tasks(job: Job) -> bool:
-        return any(t.status == TaskStatus.PENDING for t in job.tasks)
-    
+    def _pause_job_notify_once(
+        self,
+        job: Job,
+        *,
+        telegram_reason: str,
+        task: Task,
+        task_error_msg: str,
+        log_msg: str,
+    ) -> None:
+        """Parallel workers can all see 401 at once — only the first transition should Telegram spam."""
+        should_notify = False
+        with job.progress_lock:
+            if job.status == JobStatus.RUNNING:
+                job.status = JobStatus.PAUSED
+                should_notify = True
+        task.status = TaskStatus.PENDING
+        task.error = task_error_msg
+        task.current_page = 0
+        task.retry_after_monotonic = None
+        self._persist_job(job)
+        logger.warning(log_msg)
+        if should_notify:
+            self._notify('job_paused', {
+                'job_id': job.job_id,
+                'tickers': job.tickers,
+                'reason': telegram_reason,
+            })
+
+    def _schedule_task_retry_backoff(self, job: Job, task: Task) -> None:
+        """Mark PENDING and set monotonic retry time — no sleep (keeps parallel slots free)."""
+        extra_delay = max(0, task.attempts - 3) * 30
+        raw = 2.0 * task.attempts + extra_delay
+        cap = float(job.max_backoff_seconds)
+        backoff = min(raw, cap)
+        task.status = TaskStatus.PENDING
+        task.retry_after_monotonic = time.monotonic() + backoff
+        task.current_page = 0
+        logger.info(
+            "Back-off %.1fs (cap %.1fs) before retry attempt %s for %s %s",
+            backoff,
+            cap,
+            task.attempts + 1,
+            task.ticker,
+            task.date,
+        )
+        self._save_task_row(job, task)
+
+    def _save_task_row(self, job: Job, task: Task) -> None:
+        """Persist one task so a crash doesn't redo finished days."""
+        self.db.save_task(job.job_id, {
+            'ticker': task.ticker,
+            'date': task.date,
+            'status': task.status.value,
+            'error': task.error,
+            'records_fetched': task.records_fetched,
+            'attempts': task.attempts,
+        })
+
+    def _maybe_fire_progress_milestones(self, job: Job) -> None:
+        # can cross several thresholds in one tick (e.g. small job) — fire each once
+        with job.progress_lock:
+            progress = job.get_progress()
+            pct = progress['percentage']
+            for milestone in (25, 50, 75):
+                if pct >= milestone and job.last_milestone_pct < milestone:
+                    job.last_milestone_pct = milestone
+                    self._notify('job_progress', {
+                        'job_id': job.job_id,
+                        'tickers': job.tickers,
+                        'percentage': pct,
+                        'completed': progress['completed'],
+                        'total': progress['total'],
+                        'failed': progress['failed'],
+                    })
+
     def _load_jobs_from_db(self):
         """Load persisted jobs from database on startup"""
         try:
             db_jobs = self.db.get_all_jobs(limit=50)
             loaded_count = 0
+            skip_statuses = {'COMPLETED', 'FAILED', 'CANCELLED'}
             for job_data in db_jobs:
-                # only load jobs that aren't completed or failed
-                if job_data['status'] not in ['COMPLETED', 'FAILED']:
-                    # reconstruct job with tasks
-                    from datetime import timedelta
-                    start = datetime.strptime(job_data['from_date'], '%Y-%m-%d')
-                    end = datetime.strptime(job_data['until_date'], '%Y-%m-%d')
-                    
-                    # generate dates
-                    dates = []
-                    current = start
-                    while current <= end:
-                        dates.append(current.strftime('%Y-%m-%d'))
-                        current += timedelta(days=1)
-                    
-                    # create tasks
-                    tasks = []
-                    for ticker in job_data['tickers']:
-                        for date in dates:
-                            tasks.append(Task(ticker=ticker, date=date))
-                    
-                    job = Job(
-                        job_id=job_data['job_id'],
-                        tickers=job_data['tickers'],
-                        from_date=job_data['from_date'],
-                        until_date=job_data['until_date'],
-                        delay_seconds=job_data['delay_seconds'],
-                        limit=job_data['limit_per_request'],
-                        status=JobStatus(job_data['status']),
-                        created_at=job_data['created_at'],
-                        tasks=tasks
-                    )
-                    self.jobs[job.job_id] = job
-                    loaded_count += 1
-            
+                if job_data['status'] in skip_statuses:
+                    continue
+                start = datetime.strptime(job_data['from_date'], '%Y-%m-%d')
+                end = datetime.strptime(job_data['until_date'], '%Y-%m-%d')
+
+                dates = []
+                current = start
+                while current <= end:
+                    dates.append(current.strftime('%Y-%m-%d'))
+                    current += timedelta(days=1)
+
+                tasks = []
+                for ticker in job_data['tickers']:
+                    for d in dates:
+                        tasks.append(Task(ticker=ticker, date=d))
+
+                pw = int(job_data.get('parallel_workers', 1) or 1)
+                mb = float(job_data.get('max_backoff_seconds', 180) or 180)
+
+                job = Job(
+                    job_id=job_data['job_id'],
+                    tickers=job_data['tickers'],
+                    from_date=job_data['from_date'],
+                    until_date=job_data['until_date'],
+                    delay_seconds=job_data['delay_seconds'],
+                    limit=job_data['limit_per_request'],
+                    parallel_workers=pw,
+                    max_backoff_seconds=mb,
+                    status=JobStatus(job_data['status']),
+                    created_at=job_data['created_at'],
+                    started_at=job_data.get('start_time'),
+                    completed_at=job_data.get('end_time'),
+                    error=job_data.get('error'),
+                    tasks=tasks,
+                )
+
+                saved_tasks = self.db.get_job_tasks(job.job_id)
+                if saved_tasks:
+                    key_to_row = {(r['ticker'], r['date']): r for r in saved_tasks}
+                    for t in job.tasks:
+                        row = key_to_row.get((t.ticker, t.date))
+                        if not row:
+                            continue
+                        try:
+                            t.status = TaskStatus(row['status'])
+                        except ValueError:
+                            t.status = TaskStatus.PENDING
+                        t.error = row.get('error')
+                        t.records_fetched = row.get('records_fetched') or 0
+                        t.attempts = row.get('attempts') or 0
+
+                self.jobs[job.job_id] = job
+                loaded_count += 1
+
             logger.info(f"Loaded {loaded_count} pending jobs from database")
         except Exception as e:
             logger.error(f"Failed to load jobs from database: {e}")
-    
+
     def _persist_job(self, job: Job):
         """Save job to database"""
         try:
@@ -262,6 +415,8 @@ class JobManager:
                 'until_date': job.until_date,
                 'delay_seconds': job.delay_seconds,
                 'limit': job.limit,
+                'parallel_workers': job.parallel_workers,
+                'max_backoff_seconds': job.max_backoff_seconds,
                 'status': job.status.value,
                 'created_at': job.created_at,
                 'start_time': job.started_at,
@@ -274,7 +429,7 @@ class JobManager:
             self.db.save_job(job_data)
         except Exception as e:
             logger.error(f"Failed to persist job {job.job_id}: {e}")
-        
+
     def create_job(
         self,
         tickers: List[str],
@@ -282,29 +437,28 @@ class JobManager:
         until_date: str,
         delay_seconds: float = 3.0,
         limit: int = 50,
-        parallel_workers: int = 1
+        parallel_workers: int = 1,
+        max_backoff_seconds: float = 180.0,
     ) -> str:
         """Create a new job with tasks for each ticker-date combination"""
         job_id = str(uuid.uuid4())
-        
-        # parse dates
+        mb = float(max_backoff_seconds)
+        mb = max(_MIN_BACKOFF_CAP, min(mb, _MAX_BACKOFF_CAP))
+
         start = datetime.strptime(from_date, '%Y-%m-%d')
         end = datetime.strptime(until_date, '%Y-%m-%d')
-        
-        # generate all date strings in range
+
         dates = []
         current = start
         while current <= end:
             dates.append(current.strftime('%Y-%m-%d'))
             current += timedelta(days=1)
-        
-        # create tasks for each ticker-date combo
+
         tasks = []
         for ticker in tickers:
             for date in dates:
                 tasks.append(Task(ticker=ticker, date=date))
-        
-        # create job
+
         job = Job(
             job_id=job_id,
             tickers=tickers,
@@ -313,44 +467,49 @@ class JobManager:
             delay_seconds=delay_seconds,
             limit=limit,
             parallel_workers=parallel_workers,
+            max_backoff_seconds=mb,
             tasks=tasks
         )
-        
+
         self.jobs[job_id] = job
-        
-        # persist to database
+
         self._persist_job(job)
-        
+        for t in tasks:
+            self._save_task_row(job, t)
+
         logger.info(f"Created job {job_id} with {len(tasks)} tasks")
-        
-        # start worker if not running
+
         if self.worker_thread is None or not self.worker_thread.is_alive():
             self.start_worker()
-        
+
         return job_id
-    
+
     def get_job(self, job_id: str) -> Optional[Job]:
         """Get job by ID"""
         return self.jobs.get(job_id)
-    
+
     def list_jobs(self) -> List[Dict[str, Any]]:
         """List all jobs"""
         return [job.to_dict() for job in self.jobs.values()]
-    
+
     def pause_job(self, job_id: str):
         """Pause a job"""
         job = self.jobs.get(job_id)
+        # region agent log
+        _dbg('jobs.py:pause_job', 'pause_job called', {'job_id':job_id,'job_status':job.status.value if job else None,'current_job_id':self.current_job_id,'pause_flag':self.pause_flag.is_set(),'worker_alive':bool(self.worker_thread and self.worker_thread.is_alive())}, hyp='H-A')
+        # endregion
         if job and job.status == JobStatus.RUNNING:
             job.status = JobStatus.PAUSED
             self.pause_flag.set()
             logger.info(f"Job {job_id} paused")
-    
+
     def resume_job(self, job_id: str):
         """Resume a paused job"""
         job = self.jobs.get(job_id)
+        # region agent log
+        _dbg('jobs.py:resume_job', 'resume_job called', {'job_id':job_id,'job_status':job.status.value if job else None,'current_job_id':self.current_job_id,'pause_flag':self.pause_flag.is_set(),'will_be':'RUNNING' if self.current_job_id==job_id else 'QUEUED'}, hyp='H-B')
+        # endregion
         if job and job.status == JobStatus.PAUSED:
-            # if the worker is still inside this job's _process_job, keep RUNNING so
-            # cancel_check (status != RUNNING) doesn't instantly abort every fetch
             if self.current_job_id == job_id:
                 job.status = JobStatus.RUNNING
             else:
@@ -358,14 +517,16 @@ class JobManager:
             self.pause_flag.clear()
             self._persist_job(job)
             logger.info(f"Job {job_id} resumed")
-            
-            # restart worker if not running
+
             if not self.worker_thread or not self.worker_thread.is_alive():
                 self.start_worker()
 
     def play_queued_job(self, job_id: str) -> bool:
         """Kick a queued job so worker starts processing it next."""
         job = self.jobs.get(job_id)
+        # region agent log
+        _dbg('jobs.py:play_queued_job', 'play_queued_job called', {'job_id':job_id,'job_status':job.status.value if job else None,'current_job_id':self.current_job_id,'pause_flag':self.pause_flag.is_set(),'worker_alive':bool(self.worker_thread and self.worker_thread.is_alive()),'next_job_id_before':self._next_job_id}, hyp='H-A,H-C')
+        # endregion
         if not job or job.status != JobStatus.QUEUED:
             return False
 
@@ -374,7 +535,7 @@ class JobManager:
         if not self.worker_thread or not self.worker_thread.is_alive():
             self.start_worker()
         return True
-    
+
     def auto_resume_paused_jobs(self):
         """Auto-resume all paused jobs (call when token is refreshed)"""
         resumed_count = 0
@@ -382,32 +543,35 @@ class JobManager:
             if job.status == JobStatus.PAUSED:
                 self.resume_job(job.job_id)
                 resumed_count += 1
-        
+
         if resumed_count > 0:
             logger.info(f"[OK] Auto-resumed {resumed_count} paused job(s) after token refresh")
-        
+
         return resumed_count
-    
+
     def cancel_job(self, job_id: str):
         """Cancel a job"""
         job = self.jobs.get(job_id)
         if job:
-            job.status = JobStatus.FAILED
+            job.status = JobStatus.CANCELLED
             job.error = 'Cancelled by user'
             self._persist_job(job)
-            # nudge the worker out of pause-wait spinners (cancel while paused edge case)
             self.pause_flag.set()
-            if not any(j.status == JobStatus.PAUSED for j in self.jobs.values()):
+            will_clear = not any(j.status == JobStatus.PAUSED for j in self.jobs.values())
+            # region agent log
+            _dbg('jobs.py:cancel_job', 'cancel_job: pause_flag clear decision', {'job_id':job_id,'will_clear_flag':will_clear,'other_paused_jobs':[j.job_id for j in self.jobs.values() if j.status==JobStatus.PAUSED and j.job_id!=job_id]}, hyp='H-D')
+            # endregion
+            if will_clear:
                 self.pause_flag.clear()
             logger.info(f"Job {job_id} cancelled")
 
     def delete_job(self, job_id: str) -> bool:
-        """Delete a job if it's failed or paused."""
+        """Delete a job if it's failed, cancelled, or paused."""
         job = self.jobs.get(job_id)
         if not job:
             return False
 
-        if job.status not in [JobStatus.FAILED, JobStatus.PAUSED]:
+        if job.status not in [JobStatus.FAILED, JobStatus.PAUSED, JobStatus.CANCELLED]:
             return False
 
         deleted = self.db.delete_job(job_id)
@@ -421,17 +585,11 @@ class JobManager:
         return True
 
     def retry_job(self, job_id: str) -> bool:
-        """Reset a FAILED job back to QUEUED so it can be re-processed.
-        
-        Tasks that previously FAILED are reset to PENDING; completed/skipped
-        tasks are left intact so we don't re-fetch already-saved data.
-        Returns True if the job was eligible and re-queued.
-        """
+        """Reset a FAILED job back to QUEUED so it can be re-processed."""
         job = self.jobs.get(job_id)
         if not job or job.status != JobStatus.FAILED:
             return False
 
-        # reset failed tasks to pending
         for task in job.tasks:
             if task.status == TaskStatus.FAILED:
                 task.status = TaskStatus.PENDING
@@ -440,27 +598,25 @@ class JobManager:
                 task.records_fetched = 0
                 task.pages_fetched = 0
                 task.current_page = 0
+                task.retry_after_monotonic = None
+                self._save_task_row(job, task)
 
         job.status = JobStatus.QUEUED
         job.error = None
         job.completed_at = None
+        job.last_milestone_pct = 0
         job.cooldown_until_monotonic = None
         job.cooldown_reason = None
         self._persist_job(job)
         logger.info(f"Job {job_id} re-queued for retry")
 
-        # ensure the worker is running
         if not self.worker_thread or not self.worker_thread.is_alive():
             self.start_worker()
 
         return True
 
     def retry_task(self, job_id: str, ticker: str, date: str) -> bool:
-        """Retry one FAILED task in a job.
-
-        This keeps all other tasks untouched and only re-queues the exact
-        ticker+date pair.
-        """
+        """Retry one FAILED task in a job."""
         job = self.jobs.get(job_id)
         if not job:
             return False
@@ -480,9 +636,10 @@ class JobManager:
         task_to_retry.records_fetched = 0
         task_to_retry.pages_fetched = 0
         task_to_retry.current_page = 0
+        task_to_retry.retry_after_monotonic = None
+        self._save_task_row(job, task_to_retry)
 
-        # Mark job queueable again so worker picks up the reset task.
-        if job.status in [JobStatus.COMPLETED, JobStatus.FAILED]:
+        if job.status in [JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED]:
             job.status = JobStatus.QUEUED
             job.completed_at = None
             job.error = None
@@ -494,50 +651,58 @@ class JobManager:
             self.start_worker()
 
         return True
-    
+
     def start_worker(self):
         """Start background worker thread"""
         self.stop_flag.clear()
         self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
         self.worker_thread.start()
         logger.info("Job worker started")
-    
+
     def stop_worker(self):
         """Stop background worker"""
         self.stop_flag.set()
         if self.worker_thread:
             self.worker_thread.join(timeout=5)
         logger.info("Job worker stopped")
-    
+
     def _worker_loop(self):
         """Main worker loop that processes jobs"""
         while not self.stop_flag.is_set():
-            next_job = None
+            try:
+                next_job = None
 
-            if self._next_job_id:
-                prioritized = self.jobs.get(self._next_job_id)
-                if prioritized and prioritized.status == JobStatus.QUEUED:
-                    next_job = prioritized
-                self._next_job_id = None
+                if self._next_job_id:
+                    prioritized = self.jobs.get(self._next_job_id)
+                    if prioritized and prioritized.status == JobStatus.QUEUED:
+                        next_job = prioritized
+                    # region agent log
+                    _dbg('jobs.py:_worker_loop', '_next_job_id consumed', {'next_job_id':self._next_job_id,'found':next_job is not None,'prioritized_status':prioritized.status.value if prioritized else None}, hyp='H-C')
+                    # endregion
+                    self._next_job_id = None
 
-            if not next_job:
-                for job in self.jobs.values():
-                    if job.status == JobStatus.QUEUED:
-                        next_job = job
-                        break
-            
-            if next_job:
-                self._process_job(next_job)
-            else:
-                time.sleep(1)
-    
+                if not next_job:
+                    next_job = self._pick_next_queued_job()
+
+                if next_job:
+                    self._process_job(next_job)
+                else:
+                    time.sleep(1)
+            except Exception as e:
+                logger.critical(
+                    "Job worker loop crashed (will retry in 5s): %s",
+                    e,
+                    exc_info=True,
+                )
+                time.sleep(5)
+
     def _process_job(self, job: Job):
         """Process all tasks in a job with optional parallelism"""
         job.status = JobStatus.RUNNING
         job.started_at = now_wib().isoformat()
         self.current_job_id = job.job_id
-        self._last_milestone = 0  # track progress milestones per job
-        
+        job.last_milestone_pct = 0
+
         workers = job.parallel_workers
         logger.info(f"Starting job {job.job_id} with {workers} parallel worker(s)")
 
@@ -549,16 +714,22 @@ class JobManager:
             'total_tasks': len(job.tasks),
             'parallel_workers': workers,
         })
-        
+
         try:
             if workers == 1:
-                # sequential — loop on PENDING so a 429 can re-queue the same task and we pick it up again
-                while self._job_has_pending_tasks(job):
+                while self._job_has_pending_tasks_any(job):
+                    # region agent log
+                    if self.pause_flag.is_set() and job.status == JobStatus.PAUSED:
+                        _dbg('jobs.py:_process_job:pause_loop', 'worker entering pause spin-wait', {'job_id':job.job_id,'pause_flag':True,'next_job_id':self._next_job_id,'worker_alive':bool(self.worker_thread and self.worker_thread.is_alive())}, hyp='H-A')
+                    # endregion
                     while (
-                        self.pause_flag.is_set()
-                        and not self.stop_flag.is_set()
+                        not self.stop_flag.is_set()
                         and job.status == JobStatus.PAUSED
                     ):
+                        # another job is waiting to run — yield so the worker can pick it up
+                        if self._next_job_id and self._next_job_id != job.job_id:
+                            self._persist_job(job)
+                            return
                         time.sleep(0.5)
 
                     if self.stop_flag.is_set():
@@ -581,11 +752,22 @@ class JobManager:
 
                     next_task = None
                     for t in job.tasks:
-                        if t.status == TaskStatus.PENDING:
+                        if self._task_ready_to_run(t):
                             next_task = t
                             break
+
                     if not next_task:
-                        break
+                        soonest = None
+                        now_m = time.monotonic()
+                        for t in job.tasks:
+                            if t.status != TaskStatus.PENDING:
+                                continue
+                            ra = t.retry_after_monotonic
+                            if ra is not None and ra > now_m:
+                                soonest = ra if soonest is None else min(soonest, ra)
+                        if soonest:
+                            time.sleep(min(soonest - now_m, 0.5))
+                        continue
 
                     self._process_task(job, next_task)
 
@@ -593,11 +775,10 @@ class JobManager:
                         self._persist_job(job)
                         return
 
-                    if job.delay_seconds > 0 and self._job_has_pending_tasks(job):
+                    if job.delay_seconds > 0 and self._job_has_pending_tasks_any(job):
                         time.sleep(job.delay_seconds)
-            
+
             else:
-                # parallel: submit only PENDING tasks so 429 can re-queue without getting stuck
                 with ThreadPoolExecutor(max_workers=workers) as executor:
                     futures: Dict[Future, Task] = {}
 
@@ -605,7 +786,7 @@ class JobManager:
                         for t in job.tasks:
                             if self.stop_flag.is_set() or self._is_job_cancelled(job):
                                 return
-                            if t.status != TaskStatus.PENDING:
+                            if not self._task_ready_to_run(t):
                                 continue
                             if t in futures.values():
                                 continue
@@ -614,12 +795,16 @@ class JobManager:
                             fut = executor.submit(self._process_task, job, t)
                             futures[fut] = t
 
-                    while futures or self._job_has_pending_tasks(job):
+                    while futures or self._job_has_pending_tasks_any(job):
                         while (
-                            self.pause_flag.is_set()
-                            and not self.stop_flag.is_set()
+                            not self.stop_flag.is_set()
                             and job.status == JobStatus.PAUSED
                         ):
+                            # another job is waiting to run — yield so the worker can pick it up
+                            if self._next_job_id and self._next_job_id != job.job_id:
+                                self._persist_job(job)
+                                executor.shutdown(wait=False)
+                                return
                             time.sleep(0.5)
 
                         if self.stop_flag.is_set():
@@ -647,8 +832,7 @@ class JobManager:
                         _submit_pending_slots()
 
                         if not futures:
-                            # pending tasks exist but cooldown or race — tiny sleep so we don't spin
-                            if self._job_has_pending_tasks(job):
+                            if self._job_has_pending_tasks_any(job):
                                 time.sleep(0.05)
                             continue
 
@@ -667,10 +851,14 @@ class JobManager:
                                 )
 
                             while (
-                                self.pause_flag.is_set()
-                                and not self.stop_flag.is_set()
+                                not self.stop_flag.is_set()
                                 and job.status == JobStatus.PAUSED
                             ):
+                                # another job is waiting to run — yield so the worker can pick it up
+                                if self._next_job_id and self._next_job_id != job.job_id:
+                                    self._persist_job(job)
+                                    executor.shutdown(wait=False)
+                                    return
                                 time.sleep(0.5)
 
                             if self.stop_flag.is_set():
@@ -683,7 +871,7 @@ class JobManager:
                                 self._persist_job(job)
                                 return
 
-                            if job.delay_seconds > 0 and (futures or self._job_has_pending_tasks(job)):
+                            if job.delay_seconds > 0 and (futures or self._job_has_pending_tasks_any(job)):
                                 time.sleep(job.delay_seconds)
 
                             self._wait_cooldown_if_needed(job)
@@ -692,17 +880,15 @@ class JobManager:
                                 executor.shutdown(wait=False)
                                 self._persist_job(job)
                                 return
-            
-            # check if job should be paused (token expired)
+
             if job.status == JobStatus.PAUSED:
                 logger.warning(f"Job {job.job_id} paused during execution")
                 return
 
             if self._is_job_cancelled(job):
-                logger.warning(f"Job {job.job_id} stopped (cancelled)")
+                logger.warning(f"Job {job.job_id} stopped (cancelled or failed)")
                 return
-            
-            # job completed — don't stomp FAILED/PAUSED from cancel or token issues
+
             if job.status == JobStatus.RUNNING:
                 job.status = JobStatus.COMPLETED
                 job.completed_at = now_wib().isoformat()
@@ -722,7 +908,7 @@ class JobManager:
                     'started_at': job.started_at,
                     'completed_at': job.completed_at,
                 })
-            
+
         except Exception as e:
             logger.error(f"Job {job.job_id} failed with error: {e}")
             job.status = JobStatus.FAILED
@@ -734,206 +920,161 @@ class JobManager:
                 'tickers': job.tickers,
                 'error': str(e),
             })
-        
+
         finally:
             self.current_job_id = None
-    
-    def _process_task(self, job: Job, task: Task):
-        """Process a single task (fetch data for one ticker-date) with auto-retry.
-        
-        The task will be attempted up to (1 + job.max_retries) times on
-        transient failures.  Login/captcha pauses abort immediately without
-        consuming retry budget.
-        """
-        max_attempts = 1 + job.max_retries
 
-        for attempt in range(1, max_attempts + 1):
-            if self._is_job_cancelled(job):
-                # don't leave tasks stuck in RUNNING when the job is already dead
+    def _process_task(self, job: Job, task: Task):
+        """Process a single task — one fetch attempt per call; backoff is scheduled, not slept here."""
+        if self._is_job_cancelled(job):
+            task.status = TaskStatus.PENDING
+            task.current_page = 0
+            return
+
+        task.status = TaskStatus.RUNNING
+        task.attempts += 1
+        task.current_page = 0
+        task.end_reason = None
+        task.retry_after_monotonic = None
+
+        if task.attempts > 1:
+            logger.info(f"Retrying {task.ticker} {task.date} (attempt {task.attempts})")
+        else:
+            logger.info(f"Fetching {task.ticker} for {task.date}")
+
+        def update_progress(page: int, total_records: int):
+            task.current_page = page
+            task.records_fetched = total_records
+
+        try:
+            result = self.client.fetch_running_trade(
+                ticker=task.ticker,
+                date=task.date,
+                limit=job.limit,
+                progress_callback=update_progress,
+                cancel_check=lambda: job.status != JobStatus.RUNNING,
+            )
+
+            if result.get('cancelled'):
                 task.status = TaskStatus.PENDING
                 task.current_page = 0
+                task.error = None
+                task.end_reason = None
+                logger.info(f"Fetch aborted for {task.ticker} {task.date} (job stopped)")
                 return
 
-            task.status = TaskStatus.RUNNING
-            task.attempts += 1
-            task.current_page = 0
-            task.end_reason = None
-
-            if attempt > 1:
-                logger.info(f"Retrying {task.ticker} {task.date} (attempt {attempt}/{max_attempts})")
-            else:
-                logger.info(f"Fetching {task.ticker} for {task.date}")
-
-            # progress callback to update task in real-time
-            def update_progress(page: int, total_records: int):
-                task.current_page = page
-                task.records_fetched = total_records
-
-            try:
-                # fetch data with progress tracking
-                result = self.client.fetch_running_trade(
-                    ticker=task.ticker,
-                    date=task.date,
-                    limit=job.limit,
-                    progress_callback=update_progress,
-                    cancel_check=lambda: job.status != JobStatus.RUNNING,
-                )
-
-                if result.get('cancelled'):
-                    task.status = TaskStatus.PENDING
-                    task.current_page = 0
-                    task.error = None
-                    task.end_reason = None
-                    logger.info(f"Fetch aborted for {task.ticker} {task.date} (job stopped)")
+            if result.get('success'):
+                er = result.get('end_reason')
+                if er not in NORMAL_FETCH_END_REASONS:
+                    task.error = (
+                        f"Internal fetch end state: {er!r} (expected one of {sorted(NORMAL_FETCH_END_REASONS)})"
+                    )
+                    task.end_reason = er
+                    logger.error(
+                        f"Refusing to mark complete for {task.ticker} {task.date}: bad end_reason={er!r}"
+                    )
+                    self._schedule_task_retry_backoff(job, task)
                     return
 
-                if result.get('success'):
-                    er = result.get('end_reason')
-                    if er not in NORMAL_FETCH_END_REASONS:
-                        # should not happen if client is consistent; don't write CSV on weird success payloads
-                        task.error = (
-                            f"Internal fetch end state: {er!r} (expected one of {sorted(NORMAL_FETCH_END_REASONS)})"
-                        )
-                        task.end_reason = er
-                        logger.error(
-                            f"Refusing to mark complete for {task.ticker} {task.date}: bad end_reason={er!r}"
-                        )
-                    else:
-                        # save to CSV
-                        trades = result.get('data', [])
-                        filename = self.storage.get_filename(
-                            task.ticker,
-                            job.from_date,
-                            job.until_date
-                        )
+                trades = result.get('data', [])
+                filename = self.storage.get_filename(
+                    task.ticker,
+                    job.from_date,
+                    job.until_date
+                )
 
-                        save_result = self.storage.save_trades(
-                            ticker=task.ticker,
-                            date=task.date,
-                            trades=trades,
-                            filename=filename
-                        )
+                save_result = self.storage.save_trades(
+                    ticker=task.ticker,
+                    date=task.date,
+                    trades=trades,
+                    filename=filename
+                )
 
-                        if save_result.get('success'):
-                            task.status = TaskStatus.COMPLETED
-                            task.records_fetched = result.get('count', 0)
-                            task.pages_fetched = result.get('pages_fetched', 1)
-                            task.end_reason = er
-                            logger.info(
-                                f"Saved {task.records_fetched} records ({task.pages_fetched} pages) for "
-                                f"{task.ticker} {task.date} (end_reason={er})"
-                            )
-                            # persist progress every 5 tasks
-                            progress = job.get_progress()
-                            if progress['completed'] % 5 == 0:
-                                self._persist_job(job)
-
-                            # send milestone notifications at 25/50/75%
-                            pct = progress['percentage']
-                            for milestone in (25, 50, 75):
-                                if pct >= milestone and getattr(self, '_last_milestone', 0) < milestone:
-                                    self._last_milestone = milestone
-                                    self._notify('job_progress', {
-                                        'job_id': job.job_id,
-                                        'tickers': job.tickers,
-                                        'percentage': pct,
-                                        'completed': progress['completed'],
-                                        'total': progress['total'],
-                                        'failed': progress['failed'],
-                                    })
-                            return  # success — exit retry loop
-
-                        else:
-                            # save error — worth retrying
-                            task.error = save_result.get('error', 'Unknown save error')
-                            logger.error(
-                                f"Failed to save {task.ticker} {task.date} (attempt {attempt}): {task.error}"
-                            )
-
-                else:
-                    # fetch failed
-                    error = result.get('error', 'Unknown error')
-
-                    # 429 — cooldown job-wide, don't burn max_retries / don't mark FAILED
-                    if result.get('rate_limited'):
-                        task.status = TaskStatus.PENDING
-                        if task.attempts > 0:
-                            task.attempts -= 1
-                        task.current_page = 0
-                        task.error = None
-                        task.end_reason = None
-                        self._extend_job_cooldown(
-                            job,
-                            result.get('retry_after_seconds'),
-                            f"HTTP 429 {task.ticker} {task.date}",
-                        )
-                        logger.info(
-                            f"Rate limited {task.ticker} {task.date} — leaving task PENDING "
-                            f"(retry_after={result.get('retry_after_seconds')!r})"
-                        )
-                        return
-
-                    # handle special cases - pause job gracefully (no retry)
-                    if result.get('requires_login'):
-                        job.status = JobStatus.PAUSED
-                        task.status = TaskStatus.PENDING
-                        task.error = 'Token expired - job paused'
-                        task.current_page = 0
+                if save_result.get('success'):
+                    task.status = TaskStatus.COMPLETED
+                    task.records_fetched = result.get('count', 0)
+                    task.pages_fetched = result.get('pages_fetched', 1)
+                    task.end_reason = er
+                    task.error = None
+                    logger.info(
+                        f"Saved {task.records_fetched} records ({task.pages_fetched} pages) for "
+                        f"{task.ticker} {task.date} (end_reason={er})"
+                    )
+                    self._save_task_row(job, task)
+                    progress = job.get_progress()
+                    if progress['completed'] % 5 == 0:
                         self._persist_job(job)
-                        logger.warning(f"Job {job.job_id} PAUSED - Token expired. Set new token to resume.")
-                        self._notify('job_paused', {
-                            'job_id': job.job_id,
-                            'tickers': job.tickers,
-                            'reason': 'Token expired',
-                        })
-                        return
+                    self._maybe_fire_progress_milestones(job)
+                    return
 
-                    elif result.get('captcha_required'):
-                        job.status = JobStatus.PAUSED
-                        task.status = TaskStatus.PENDING
-                        task.error = 'Captcha required'
-                        task.current_page = 0
-                        self._persist_job(job)
-                        logger.warning(f"Job {job.job_id} paused due to captcha")
-                        self._notify('job_paused', {
-                            'job_id': job.job_id,
-                            'tickers': job.tickers,
-                            'reason': 'Captcha required',
-                        })
-                        return
+                task.error = save_result.get('error', 'Unknown save error')
+                logger.error(
+                    f"Failed to save {task.ticker} {task.date} (attempt {task.attempts}): {task.error}"
+                )
+                self._schedule_task_retry_backoff(job, task)
+                return
 
-                    else:
-                        # other error — may retry
-                        if result.get('partial') and result.get('end_reason') == FetchEndReason.FETCH_INTERRUPTED:
-                            n = result.get('count', 0)
-                            task.end_reason = FetchEndReason.FETCH_INTERRUPTED
-                            task.error = (
-                                f"Day incomplete — fetch error after {n} row(s) in memory (not saved). {error}"
-                            )
-                            logger.error(
-                                f"Fetch interrupted for {task.ticker} {task.date} (attempt {attempt}): {error} "
-                                f"(end_reason={FetchEndReason.FETCH_INTERRUPTED})"
-                            )
-                        else:
-                            task.end_reason = None
-                            task.error = error
-                            logger.error(
-                                f"Task failed {task.ticker} {task.date} (attempt {attempt}): {error}"
-                            )
+            error = result.get('error', 'Unknown error')
 
-            except Exception as e:
-                task.error = str(e)
+            if result.get('rate_limited'):
+                task.status = TaskStatus.PENDING
+                if task.attempts > 0:
+                    task.attempts -= 1
                 task.current_page = 0
-                logger.error(f"Task exception {task.ticker} {task.date} (attempt {attempt}): {e}")
+                task.error = None
+                task.end_reason = None
+                self._extend_job_cooldown(
+                    job,
+                    result.get('retry_after_seconds'),
+                    f"HTTP 429 {task.ticker} {task.date}",
+                )
+                logger.info(
+                    f"Rate limited {task.ticker} {task.date} — leaving task PENDING "
+                    f"(retry_after={result.get('retry_after_seconds')!r})"
+                )
+                return
 
-            # if we haven't returned by now, this attempt failed
-            if attempt < max_attempts:
-                # brief back-off before retry
-                backoff = 2.0 * attempt
-                logger.info(f"Back-off {backoff}s before retry {attempt + 1}/{max_attempts} for {task.ticker} {task.date}")
-                time.sleep(backoff)
+            if result.get('requires_login'):
+                self._pause_job_notify_once(
+                    job,
+                    telegram_reason='Token expired',
+                    task=task,
+                    task_error_msg='Token expired - job paused',
+                    log_msg=f"Job {job.job_id} PAUSED - Token expired. Set new token to resume.",
+                )
+                return
 
-        # all attempts exhausted
-        task.status = TaskStatus.FAILED
-        logger.error(f"Task {task.ticker} {task.date} permanently failed after {max_attempts} attempt(s): {task.error}")
+            if result.get('captcha_required'):
+                self._pause_job_notify_once(
+                    job,
+                    telegram_reason='Captcha required',
+                    task=task,
+                    task_error_msg='Captcha required',
+                    log_msg=f"Job {job.job_id} paused due to captcha",
+                )
+                return
 
+            if result.get('partial') and result.get('end_reason') == FetchEndReason.FETCH_INTERRUPTED:
+                n = result.get('count', 0)
+                task.end_reason = FetchEndReason.FETCH_INTERRUPTED
+                task.error = (
+                    f"Day incomplete — fetch error after {n} row(s) in memory (not saved). {error}"
+                )
+                logger.error(
+                    f"Fetch interrupted for {task.ticker} {task.date} (attempt {task.attempts}): {error} "
+                    f"(end_reason={FetchEndReason.FETCH_INTERRUPTED})"
+                )
+            else:
+                task.end_reason = None
+                task.error = error
+                logger.error(
+                    f"Task failed {task.ticker} {task.date} (attempt {task.attempts}): {error}"
+                )
+
+            self._schedule_task_retry_backoff(job, task)
+
+        except Exception as e:
+            task.error = str(e)
+            task.current_page = 0
+            logger.error(f"Task exception {task.ticker} {task.date} (attempt {task.attempts}): {e}")
+            self._schedule_task_retry_backoff(job, task)

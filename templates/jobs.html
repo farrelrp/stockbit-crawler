@@ -154,6 +154,8 @@
 
         .job-card.status-failed { cursor: pointer; }
         .job-card.status-failed:hover { border-color: #dc3545; background: #fff8f8; }
+        .job-card.status-cancelled { cursor: pointer; }
+        .job-card.status-cancelled:hover { border-color: #9ca3af; background: #f9fafb; }
     </style>
     <h2>Jobs Management</h2>
     
@@ -223,6 +225,12 @@
                     <input type="number" id="parallel-workers" name="parallel_workers" value="1" 
                            min="1" max="10" class="form-control">
                     <small>Process multiple stocks simultaneously (1-10 workers)</small>
+                </div>
+                <div class="form-group">
+                    <label for="max-backoff">Max retry wait (seconds)</label>
+                    <input type="number" id="max-backoff" name="max_backoff_seconds" value="180" 
+                           min="5" max="86400" step="1" class="form-control">
+                    <small>Caps delay between retries (tasks retry until success; default 3 min)</small>
                 </div>
             </div>
             
@@ -450,7 +458,8 @@ document.getElementById('create-job-form').addEventListener('submit', function(e
         until_date: document.getElementById('until-date').value,
         delay_seconds: document.getElementById('delay').value,
         limit: document.getElementById('limit').value,
-        parallel_workers: document.getElementById('parallel-workers').value
+        parallel_workers: document.getElementById('parallel-workers').value,
+        max_backoff_seconds: document.getElementById('max-backoff').value
     };
     
     fetch('/api/jobs/create', {
@@ -491,7 +500,8 @@ function loadJobs() {
                 const progress = job.progress || {};
                 const percentage = progress.percentage || 0;
                 const isFailed = job.status === 'FAILED';
-                const cardClickHandler = isFailed ? `onclick="showJobDetails('${job.job_id}')"` : '';
+                const isCancelled = job.status === 'CANCELLED';
+                const cardClickHandler = (isFailed || isCancelled) ? `onclick="showJobDetails('${job.job_id}')"` : '';
                 const tasks = job.tasks || [];
                 const errTaskCount = tasks.filter(t => t && t.error).length;
 
@@ -511,7 +521,7 @@ function loadJobs() {
                                     `<button onclick="resumeJob('${job.job_id}')" class="btn-icon" title="Resume">▶</button>` : ''}
                                 ${job.status === 'FAILED' ?
                                     `<button onclick="event.stopPropagation(); retryJob('${job.job_id}')" class="btn-retry" title="Retry failed tasks">↺ Retry</button>` : ''}
-                                ${job.status === 'FAILED' || job.status === 'PAUSED' ?
+                                ${job.status === 'FAILED' || job.status === 'PAUSED' || job.status === 'CANCELLED' ?
                                     `<button onclick="event.stopPropagation(); deleteJob('${job.job_id}')" class="btn-icon" title="Delete">🗑</button>` : ''}
                                 ${job.status === 'RUNNING' || job.status === 'PAUSED' || job.status === 'QUEUED' ? 
                                     `<button onclick="cancelJob('${job.job_id}')" class="btn-icon" title="Cancel">✕</button>` : ''}
@@ -527,7 +537,7 @@ function loadJobs() {
                         <div class="job-info">
                             <strong>Created:</strong> ${new Date(job.created_at).toLocaleString()} ${job.parallel_workers > 1 ? `🚀 ${job.parallel_workers}x parallel` : ''}
                         </div>
-                        ${isFailed && job.error ? `
+                        ${(isFailed || isCancelled) && job.error ? `
                         <div class="job-info" style="color:#dc3545; font-size:12px;">
                             ⚠ ${job.error}
                         </div>` : ''}

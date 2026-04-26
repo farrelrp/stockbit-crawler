@@ -21,6 +21,44 @@ class JobDatabase:
         self.db_path = DB_FILE
         self._init_db()
     
+    def _migrate_jobs_columns(self, cursor):
+        """Add columns added after first schema version (SQLite has no IF NOT EXISTS for columns)."""
+        cursor.execute('PRAGMA table_info(jobs)')
+        cols = {row[1] for row in cursor.fetchall()}
+        if 'parallel_workers' not in cols:
+            cursor.execute(
+                'ALTER TABLE jobs ADD COLUMN parallel_workers INTEGER DEFAULT 1'
+            )
+            logger.info("Migrated jobs: added parallel_workers")
+        if 'max_backoff_seconds' not in cols:
+            cursor.execute(
+                'ALTER TABLE jobs ADD COLUMN max_backoff_seconds REAL DEFAULT 180'
+            )
+            logger.info("Migrated jobs: added max_backoff_seconds")
+
+    def _ensure_task_unique(self, cursor):
+        """One row per (job_id, ticker, date) so upserts actually replace."""
+        cursor.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type='index' AND name='idx_tasks_job_ticker_date'
+            """
+        )
+        if cursor.fetchone() is None:
+            try:
+                cursor.execute(
+                    """
+                    CREATE UNIQUE INDEX idx_tasks_job_ticker_date
+                    ON tasks(job_id, ticker, date)
+                    """
+                )
+                logger.info("Created unique index idx_tasks_job_ticker_date on tasks")
+            except sqlite3.OperationalError as e:
+                # duplicate rows from older installs — user can clean DB manually
+                logger.warning(
+                    "Could not create unique index on tasks (duplicates?): %s", e
+                )
+    
     def _init_db(self):
         """Initialize database schema"""
         try:
@@ -64,6 +102,9 @@ class JobDatabase:
                     )
                 ''')
                 
+                self._migrate_jobs_columns(cursor)
+                self._ensure_task_unique(cursor)
+                
                 conn.commit()
                 logger.info(f"Database initialized at {self.db_path}")
         except Exception as e:
@@ -84,8 +125,9 @@ class JobDatabase:
                         job_id, tickers, from_date, until_date, delay_seconds,
                         limit_per_request, status, created_at, updated_at,
                         total_tasks, completed_tasks, failed_tasks, error,
-                        start_time, end_time, total_records
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        start_time, end_time, total_records,
+                        parallel_workers, max_backoff_seconds
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     job_data['job_id'],
                     tickers_json,
@@ -102,7 +144,9 @@ class JobDatabase:
                     job_data.get('error'),
                     job_data.get('start_time'),
                     job_data.get('end_time'),
-                    job_data.get('total_records', 0)
+                    job_data.get('total_records', 0),
+                    int(job_data.get('parallel_workers', 1)),
+                    float(job_data.get('max_backoff_seconds', 180)),
                 ))
                 
                 conn.commit()
@@ -168,15 +212,20 @@ class JobDatabase:
             return False
     
     def save_task(self, job_id: str, task_data: Dict[str, Any]) -> bool:
-        """Save or update a task"""
+        """Save or update a task (one row per job_id+ticker+date)."""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
                 cursor.execute('''
-                    INSERT OR REPLACE INTO tasks (
+                    INSERT INTO tasks (
                         job_id, ticker, date, status, error, records_fetched, attempts
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(job_id, ticker, date) DO UPDATE SET
+                        status = excluded.status,
+                        error = excluded.error,
+                        records_fetched = excluded.records_fetched,
+                        attempts = excluded.attempts
                 ''', (
                     job_id,
                     task_data['ticker'],
@@ -220,7 +269,7 @@ class JobDatabase:
                 
                 cursor.execute('''
                     DELETE FROM jobs 
-                    WHERE created_at < ? AND status IN ('COMPLETED', 'FAILED')
+                    WHERE created_at < ? AND status IN ('COMPLETED', 'FAILED', 'CANCELLED')
                 ''', (cutoff,))
                 
                 deleted = cursor.rowcount
@@ -230,4 +279,3 @@ class JobDatabase:
         except Exception as e:
             logger.error(f"Failed to clear old jobs: {e}")
             return 0
-

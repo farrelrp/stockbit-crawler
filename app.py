@@ -424,6 +424,7 @@ def api_job_create():
     delay_seconds = float(data.get('delay_seconds', DEFAULT_DELAY_SECONDS))
     limit = int(data.get('limit', DEFAULT_LIMIT))
     parallel_workers = int(data.get('parallel_workers', 1))
+    max_backoff_seconds = float(data.get('max_backoff_seconds', 180))
     
     # validation
     if not tickers:
@@ -434,6 +435,9 @@ def api_job_create():
     
     if parallel_workers < 1 or parallel_workers > 10:
         return jsonify({'error': 'Parallel workers must be between 1 and 10'}), 400
+    
+    if max_backoff_seconds < 5 or max_backoff_seconds > 86400:
+        return jsonify({'error': 'max_backoff_seconds must be between 5 and 86400'}), 400
     
     try:
         # validate date format
@@ -451,7 +455,8 @@ def api_job_create():
             until_date=until_date,
             delay_seconds=delay_seconds,
             limit=limit,
-            parallel_workers=parallel_workers
+            parallel_workers=parallel_workers,
+            max_backoff_seconds=max_backoff_seconds,
         )
         
         job = job_manager.get_job(job_id)
@@ -505,7 +510,7 @@ def api_job_delete(job_id):
     ok = job_manager.delete_job(job_id)
     if ok:
         return jsonify({'success': True})
-    return jsonify({'success': False, 'error': 'Job not found or not in PAUSED/FAILED state'}), 400
+    return jsonify({'success': False, 'error': 'Job not found or not in PAUSED/FAILED/CANCELLED state'}), 400
 
 @app.route('/api/jobs/<job_id>/retry', methods=['POST'])
 def api_job_retry(job_id):

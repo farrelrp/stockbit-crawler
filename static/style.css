@@ -350,6 +350,7 @@ small {
 .status-paused { background: #fed7aa; color: #9a3412; }
 .status-completed { background: #d1fae5; color: #065f46; }
 .status-failed { background: #fee2e2; color: #991b1b; }
+.status-cancelled { background: #e5e7eb; color: #374151; }
 .status-pending { background: #f3f4f6; color: #374151; }
 
 /* Logs */
