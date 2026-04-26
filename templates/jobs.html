@@ -503,7 +503,10 @@ function loadJobs() {
                 const isCancelled = job.status === 'CANCELLED';
                 const cardClickHandler = (isFailed || isCancelled) ? `onclick="showJobDetails('${job.job_id}')"` : '';
                 const tasks = job.tasks || [];
-                const errTaskCount = tasks.filter(t => t && t.error).length;
+                // don't count "error" on rows that are actually fetching (stale/edge cases)
+                const errTaskCount = tasks.filter(
+                    t => t && t.error && t.status !== 'RUNNING'
+                ).length;
 
                 return `
                     <div class="job-card status-${job.status.toLowerCase()}" ${cardClickHandler}>
@@ -727,11 +730,17 @@ function getTaskDisplay(task) {
         statusDisplay = '';
     }
 
-    if (task.status === 'RUNNING' && task.current_page > 0) {
-        statusDisplay = `RUNNING (Page ${task.current_page})`;
-        progressInfo = task.records_fetched > 0
-            ? `<span class="task-count">📊 ${task.records_fetched} records so far...</span>`
-            : '';
+    if (task.status === 'RUNNING') {
+        // so the user can tell a retry is in flight, not stuck on the last red message
+        const retryLabel = task.attempts > 1 ? ` · Retry #${task.attempts}` : '';
+        if (task.current_page > 0) {
+            statusDisplay = `RUNNING (Page ${task.current_page}${retryLabel})`;
+            progressInfo = task.records_fetched > 0
+                ? `<span class="task-count">📊 ${task.records_fetched} records so far...</span>`
+                : '';
+        } else {
+            statusDisplay = `RUNNING${retryLabel}`;
+        }
     } else if (task.records_fetched > 0) {
         progressInfo = `<span class="task-count">${task.records_fetched} records (${task.pages_fetched || 1} pages)</span>`;
     }
@@ -766,7 +775,7 @@ function buildTaskItemMarkup(jobId, task) {
             ${progressInfo}
             ${attemptsInfo}
             ${skipBadge}
-            ${task.error ? `<span class="task-error-text">⚠ ${escapeHtml(task.error)}</span>` : ''}
+            ${task.error && task.status !== 'RUNNING' ? `<span class="task-error-text">⚠ ${escapeHtml(task.error)}</span>` : ''}
             ${erLine}
             ${retryButton}
         </div>

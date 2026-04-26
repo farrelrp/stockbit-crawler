@@ -966,7 +966,10 @@ class JobManager:
         task.attempts += 1
         task.current_page = 0
         task.end_reason = None
+        # wipe old failure text + "Retrying in…" note — this attempt is live now, not in backoff
+        task.error = None
         task.retry_after_monotonic = None
+        self._save_task_row(job, task)
 
         if task.attempts > 1:
             logger.info(f"Retrying {task.ticker} {task.date} (attempt {task.attempts})")
