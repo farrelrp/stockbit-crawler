@@ -107,9 +107,6 @@ class Job:
     completed_at: Optional[str] = None
     error: Optional[str] = None  # job-level error message if the job itself fails
     tasks: List[Task] = field(default_factory=list)
-    # runtime only — HTTP 429 backoff (not persisted; monotonic clock)
-    cooldown_until_monotonic: Optional[float] = field(default=None, repr=False)
-    cooldown_reason: Optional[str] = field(default=None, repr=False)
     # Telegram milestone spam guard (25/50/75%) — must be thread-safe in parallel mode
     last_milestone_pct: int = 0
     progress_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -117,7 +114,7 @@ class Job:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dict for JSON serialization (skip non-serializable lock + monotonic fields)."""
         skip = frozenset({
-            'cooldown_until_monotonic', 'cooldown_reason', 'progress_lock',
+            'progress_lock',
             'last_milestone_pct',  # internal Telegram milestone guard only
         })
         data: Dict[str, Any] = {}
@@ -129,7 +126,13 @@ class Job:
                 for t in self.tasks:
                     td = asdict(t)
                     td['status'] = t.status.value
+                    ra = t.retry_after_monotonic
                     td.pop('retry_after_monotonic', None)
+                    # 429 and normal backoff both use this gate — UI can show a live countdown
+                    if ra is not None:
+                        rem = ra - time.monotonic()
+                        if rem > 0:
+                            td['retry_after_seconds_remaining'] = round(rem, 1)
                     data['tasks'].append(td)
                 continue
             v = getattr(self, f.name)
@@ -137,12 +140,6 @@ class Job:
                 data['status'] = v.value if isinstance(v, JobStatus) else v
             else:
                 data[f.name] = v
-        # so the UI can show "waiting on rate limit" without digging logs
-        if self.cooldown_until_monotonic is not None:
-            rem = self.cooldown_until_monotonic - time.monotonic()
-            if rem > 0:
-                data['cooldown_seconds_remaining'] = round(rem, 1)
-                data['cooldown_reason'] = self.cooldown_reason
         return data
 
     def get_progress(self) -> Dict[str, Any]:
@@ -175,7 +172,6 @@ class JobManager:
         self.pause_flag = threading.Event()
         self.db = JobDatabase()
         self._next_job_id: Optional[str] = None  # prioritized job set by play_queued_job
-        self._cooldown_lock = threading.Lock()
 
         # external notification callback — set by TelegramBot or others
         # signature: callback(event: str, data: dict)
@@ -224,61 +220,6 @@ class JobManager:
             return None
         queued.sort(key=lambda j: j.created_at)
         return queued[0]
-
-    def _extend_job_cooldown(
-        self,
-        job: Job,
-        retry_after_seconds: Optional[float],
-        reason: str,
-    ) -> None:
-        """Lengthen job-wide cooldown after 429; several workers can race — take the latest end time."""
-        try:
-            sec = float(retry_after_seconds)
-        except (TypeError, ValueError):
-            sec = float(RATE_LIMIT_FALLBACK_SECONDS)
-        sec = max(RATE_LIMIT_MIN_SECONDS, min(sec, RATE_LIMIT_MAX_SECONDS))
-        with self._cooldown_lock:
-            new_until = time.monotonic() + sec
-            prev = job.cooldown_until_monotonic
-            if prev is None or new_until > prev:
-                job.cooldown_until_monotonic = new_until
-            job.cooldown_reason = reason
-        logger.warning(
-            "Job %s rate-limit cooldown ~%.0fs — %s",
-            job.job_id,
-            sec,
-            reason,
-        )
-
-    def _wait_cooldown_if_needed(self, job: Job) -> None:
-        """Block until 429 cooldown ends, but still respect pause/cancel/stop."""
-        while True:
-            if self.stop_flag.is_set():
-                return
-            if self._is_job_cancelled(job):
-                return
-            while (
-                not self.stop_flag.is_set()
-                and job.status == JobStatus.PAUSED
-            ):
-                time.sleep(0.5)
-            if self._is_job_cancelled(job):
-                return
-
-            with self._cooldown_lock:
-                until = job.cooldown_until_monotonic
-
-            if until is None or time.monotonic() >= until:
-                with self._cooldown_lock:
-                    if (
-                        job.cooldown_until_monotonic is not None
-                        and time.monotonic() >= job.cooldown_until_monotonic
-                    ):
-                        job.cooldown_until_monotonic = None
-                        job.cooldown_reason = None
-                return
-
-            time.sleep(0.5)
 
     def _pause_job_notify_once(
         self,
@@ -643,8 +584,6 @@ class JobManager:
         job.error = None
         job.completed_at = None
         job.last_milestone_pct = 0
-        job.cooldown_until_monotonic = None
-        job.cooldown_reason = None
         self._persist_job(job)
         logger.info(f"Job {job_id} re-queued for retry")
 
@@ -771,8 +710,6 @@ class JobManager:
                         self._persist_job(job)
                         return
 
-                    self._wait_cooldown_if_needed(job)
-
                     if self.stop_flag.is_set():
                         job.status = JobStatus.PAUSED
                         return
@@ -848,8 +785,6 @@ class JobManager:
                             self._persist_job(job)
                             return
 
-                        self._wait_cooldown_if_needed(job)
-
                         if self.stop_flag.is_set():
                             job.status = JobStatus.PAUSED
                             executor.shutdown(wait=False)
@@ -904,8 +839,6 @@ class JobManager:
 
                             if job.delay_seconds > 0 and (futures or self._job_has_pending_tasks_any(job)):
                                 time.sleep(job.delay_seconds)
-
-                            self._wait_cooldown_if_needed(job)
 
                             if self._is_job_cancelled(job):
                                 executor.shutdown(wait=False)
@@ -1062,14 +995,15 @@ class JobManager:
                 except (TypeError, ValueError):
                     wait_secs = float(RATE_LIMIT_FALLBACK_SECONDS)
                 task.error = f"Rate limited — retrying in {wait_secs:.0f}s..."
-                self._extend_job_cooldown(
-                    job,
-                    raw_wait,
-                    f"HTTP 429 {task.ticker} {task.date}",
-                )
-                logger.info(
-                    f"Rate limited {task.ticker} {task.date} — leaving task PENDING "
-                    f"(retry_after={raw_wait!r})"
+                # only this task waits — other PENDING days can still run in parallel
+                task.retry_after_monotonic = time.monotonic() + wait_secs
+                self._save_task_row(job, task)
+                logger.warning(
+                    "Task %s %s rate-limited (HTTP 429) — retry in ~%.0fs (job %s, other tasks keep running)",
+                    task.ticker,
+                    task.date,
+                    wait_secs,
+                    job.job_id,
                 )
                 return
 

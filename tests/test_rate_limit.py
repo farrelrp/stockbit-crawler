@@ -66,7 +66,7 @@ class TestFetchRunningTrade429(unittest.TestCase):
 
 
 class TestJobManager429(unittest.TestCase):
-    def test_rate_limit_keeps_task_pending_and_sets_cooldown(self):
+    def test_rate_limit_keeps_task_pending_and_sets_per_task_retry_gate(self):
         client = MagicMock()
         client.fetch_running_trade.return_value = {
             "success": False,
@@ -89,7 +89,8 @@ class TestJobManager429(unittest.TestCase):
         )
         jm._process_task(job, job.tasks[0])
         self.assertEqual(job.tasks[0].status, TaskStatus.PENDING)
-        self.assertIsNotNone(job.cooldown_until_monotonic)
-        self.assertIn("429", (job.cooldown_reason or ""))
+        # this task alone is blocked — not a job-wide pause
+        self.assertIsNotNone(job.tasks[0].retry_after_monotonic)
+        self.assertGreater(job.tasks[0].retry_after_monotonic, __import__("time").monotonic())
         # didn't burn the attempt counter as a "real" try
         self.assertEqual(job.tasks[0].attempts, 0)

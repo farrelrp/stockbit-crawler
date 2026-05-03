@@ -27,7 +27,7 @@ class FetchEndReason:
     # network/auth error after at least one good page — must NOT be saved as a complete day
     FETCH_INTERRUPTED = "fetch_interrupted"
     CANCELLED_PARTIAL = "cancelled_partial"
-    # hit rate limit mid-run — jobs layer should cooldown, not burn retries
+    # hit rate limit mid-run — jobs layer gates that task, not burn retries
     RATE_LIMITED = "rate_limited"
 
 
@@ -312,13 +312,13 @@ class StockbitClient:
             
             # check for errors
             if not result.get('success'):
-                # 429 — don't pretend it's a generic interrupted fetch; jobs use cooldown
+                # 429 — don't pretend it's a generic interrupted fetch; jobs layer handles per-task wait
                 if result.get('rate_limited'):
                     err = result.get('error', 'Rate limited (429)')
                     retry_after = result.get('retry_after_seconds', RATE_LIMIT_FALLBACK_SECONDS)
                     if all_trades:
                         logger.warning(
-                            f"429 on page {page} for {ticker} {date} after {len(all_trades)} trades — cooldown "
+                            f"429 on page {page} for {ticker} {date} after {len(all_trades)} trades — per-task wait "
                             f"(retry_after={retry_after})"
                         )
                         return {
