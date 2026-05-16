@@ -8,12 +8,71 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
-from config import CONFIG_DIR, STOCKBIT_API_BASE, HEADERS_TEMPLATE
+from config import CONFIG_DIR, STOCKBIT_API_BASE, HEADERS_TEMPLATE, CREDENTIALS_FILE
 
 logger = logging.getLogger(__name__)
 
 TOKEN_FILE = CONFIG_DIR / 'token.json'
 WEBSOCKET_KEY_URL = f'{STOCKBIT_API_BASE}/auth/websocket/key'
+
+
+class CredentialsManager:
+    """Stores Stockbit credentials locally for automatic token refresh."""
+
+    def __init__(self):
+        self.path = Path(CREDENTIALS_FILE)
+
+    def get_credentials(self) -> Optional[Dict[str, str]]:
+        if not self.path.exists():
+            return None
+        try:
+            with open(self.path, 'r') as f:
+                data = json.load(f)
+            email = (data.get('email') or '').strip()
+            password = data.get('password') or ''
+            if not email or not password:
+                return None
+            return {'email': email, 'password': password}
+        except Exception as e:
+            logger.error("Failed to load credentials: %s", e)
+            return None
+
+    def set_credentials(self, email: str, password: str) -> Dict[str, Any]:
+        email = (email or '').strip()
+        password = password or ''
+        if not email or not password:
+            return {'success': False, 'error': 'email and password are required'}
+        try:
+            with open(self.path, 'w') as f:
+                json.dump({'email': email, 'password': password}, f)
+            return {'success': True}
+        except Exception as e:
+            logger.error("Failed to save credentials: %s", e)
+            return {'success': False, 'error': str(e)}
+
+    def clear_credentials(self) -> Dict[str, Any]:
+        try:
+            if self.path.exists():
+                self.path.unlink()
+            return {'success': True}
+        except Exception as e:
+            logger.error("Failed to clear credentials: %s", e)
+            return {'success': False, 'error': str(e)}
+
+    def get_status(self) -> Dict[str, Any]:
+        creds = self.get_credentials()
+        if not creds:
+            return {'has_credentials': False}
+        email = creds['email']
+        if '@' in email:
+            local, domain = email.split('@', 1)
+            masked = (local[:2] + '***@' + domain) if local else ('***@' + domain)
+        else:
+            masked = email[:2] + '***'
+        return {
+            'has_credentials': True,
+            'email': masked,
+        }
 
 class TokenManager:
     """Manages Bearer token and cookies - manual input only"""

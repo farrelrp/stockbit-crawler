@@ -31,13 +31,14 @@ from config import (
     ORDERBOOK_WATCHLIST_FILE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
     TELEGRAM_HEARTBEAT_MINUTES, AUTO_START_DAEMON
 )
-from auth import TokenManager
+from auth import TokenManager, CredentialsManager
 from stockbit_client import StockbitClient
 from storage import CSVStorage
 from jobs import JobManager
 from orderbook_manager import OrderbookManager
 from orderbook_daemon import OrderbookDaemon
 from replay_engine import get_replay_engine
+from settings_store import SettingsStore, DEFAULT_PAUSE_ON_RATE_LIMIT
 
 # Module-level globals (set in __main__)
 telegram_bot_instance = None
@@ -83,6 +84,14 @@ def setup_logging():
 
 setup_logging()
 logger = logging.getLogger(__name__)
+
+
+def _as_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+    return bool(value)
 
 # ===== INDONESIAN MARKET HOURS LOGIC =====
 
@@ -213,6 +222,8 @@ def get_market_status():
         }
 
 # Initialize components
+settings_store = SettingsStore()
+credentials_manager = CredentialsManager()
 token_manager = TokenManager()
 stockbit_client = StockbitClient(token_manager)
 csv_storage = CSVStorage()
@@ -292,6 +303,57 @@ def replay_index():
 
 # ===== API ENDPOINTS =====
 
+# --- Persisted Settings / Credentials ---
+
+@app.route('/api/settings/job-defaults', methods=['GET'])
+def api_job_defaults_get():
+    """Get persisted job defaults."""
+    return jsonify(settings_store.get_job_defaults())
+
+
+@app.route('/api/settings/job-defaults', methods=['POST'])
+def api_job_defaults_set():
+    """Persist shared job defaults."""
+    data = request.get_json() or {}
+    delay = float(data.get('delay', DEFAULT_DELAY_SECONDS))
+    limit = int(data.get('limit', DEFAULT_LIMIT))
+    pause_on_rate_limit = _as_bool(data.get('pause_on_rate_limit', DEFAULT_PAUSE_ON_RATE_LIMIT))
+    result = settings_store.set_job_defaults(delay, limit, pause_on_rate_limit)
+    status = 200 if result.get('success') else 500
+    if result.get('success'):
+        return jsonify({'success': True, 'defaults': settings_store.get_job_defaults()}), status
+    return jsonify(result), status
+
+
+@app.route('/api/credentials/status', methods=['GET'])
+def api_credentials_status():
+    """Get saved Stockbit credential status."""
+    return jsonify(credentials_manager.get_status())
+
+
+@app.route('/api/credentials', methods=['POST'])
+def api_credentials_set():
+    """Save Stockbit credentials for automatic token refresh."""
+    data = request.get_json() or {}
+    result = credentials_manager.set_credentials(
+        data.get('email', ''),
+        data.get('password', ''),
+    )
+    status = 200 if result.get('success') else 400
+    if result.get('success'):
+        payload = credentials_manager.get_status()
+        payload['success'] = True
+        return jsonify(payload), status
+    return jsonify(result), status
+
+
+@app.route('/api/credentials', methods=['DELETE'])
+def api_credentials_delete():
+    """Delete saved Stockbit credentials."""
+    result = credentials_manager.clear_credentials()
+    status = 200 if result.get('success') else 500
+    return jsonify(result), status
+
 # --- Authentication & Token ---
 
 @app.route('/api/token/status', methods=['GET'])
@@ -336,13 +398,58 @@ def api_token_set():
 # --- Auto Login ---
 auto_auth_instance = None
 
+
+def _on_auto_login_success():
+    """Resume paused jobs after a token refresh succeeds."""
+    return job_manager.auto_resume_paused_jobs()
+
 def _get_auto_auth():
     """Lazy-load AutoAuth (pure Python, no external browser deps)."""
     global auto_auth_instance
     if auto_auth_instance is None:
         from auto_auth import AutoAuth
-        auto_auth_instance = AutoAuth(token_manager)
+        auto_auth_instance = AutoAuth(
+            token_manager,
+            credentials_manager=credentials_manager,
+            on_login_success=_on_auto_login_success,
+        )
     return auto_auth_instance
+
+
+def _trigger_job_auto_refresh(job_id: str, ticker: str, date: str):
+    """Single-flight automatic refresh for paused jobs."""
+    creds = credentials_manager.get_credentials()
+    if not creds:
+        logger.warning(
+            "Auto-refresh requested for job %s (%s %s) but no saved credentials are available",
+            job_id,
+            ticker,
+            date,
+        )
+        return {'success': False, 'error': 'No saved credentials'}
+    auto_auth = _get_auto_auth()
+    result = auto_auth.start_login(
+        email=creds['email'],
+        password=creds['password'],
+        save_credentials=False,
+    )
+    if result.get('success'):
+        logger.info(
+            "Started automatic token refresh for job %s after auth failure on %s %s",
+            job_id,
+            ticker,
+            date,
+        )
+    else:
+        logger.warning(
+            "Could not start automatic token refresh for job %s: %s",
+            job_id,
+            result.get('error'),
+        )
+    return result
+
+
+job_manager.set_auto_refresh_callback(_trigger_job_auto_refresh)
 
 @app.route('/api/token/auto-login', methods=['POST'])
 def api_token_auto_login():
@@ -352,8 +459,13 @@ def api_token_auto_login():
     data = request.get_json() or {}
     email = data.get('email', '').strip() or None
     password = data.get('password', '').strip() or None
+    save_credentials = bool(data.get('save_credentials'))
 
-    result = auto_auth.start_login(email=email, password=password)
+    result = auto_auth.start_login(
+        email=email,
+        password=password,
+        save_credentials=save_credentials,
+    )
     return jsonify(result)
 
 @app.route('/api/token/auto-login/status', methods=['GET'])
@@ -411,6 +523,7 @@ def api_job_get(job_id):
 def api_job_create():
     """Create a new job"""
     data = request.get_json() or {}
+    defaults = settings_store.get_job_defaults()
     
     # parse tickers (can be newline-separated string or array)
     tickers_input = data.get('tickers', [])
@@ -425,6 +538,9 @@ def api_job_create():
     limit = int(data.get('limit', DEFAULT_LIMIT))
     parallel_workers = int(data.get('parallel_workers', 1))
     max_backoff_seconds = float(data.get('max_backoff_seconds', 180))
+    pause_on_rate_limit = _as_bool(
+        data.get('pause_on_rate_limit', defaults.get('pause_on_rate_limit', DEFAULT_PAUSE_ON_RATE_LIMIT))
+    )
     
     # validation
     if not tickers:
@@ -446,7 +562,14 @@ def api_job_create():
     except ValueError:
         return jsonify({'error': 'Invalid date format (use YYYY-MM-DD)'}), 400
     
-    logger.info(f"Creating job: {len(tickers)} tickers, {from_date} to {until_date}, {parallel_workers} workers")
+    logger.info(
+        "Creating job: %s tickers, %s to %s, %s workers, pause_on_rate_limit=%s",
+        len(tickers),
+        from_date,
+        until_date,
+        parallel_workers,
+        pause_on_rate_limit,
+    )
     
     try:
         job_id = job_manager.create_job(
@@ -457,6 +580,7 @@ def api_job_create():
             limit=limit,
             parallel_workers=parallel_workers,
             max_backoff_seconds=max_backoff_seconds,
+            pause_on_rate_limit=pause_on_rate_limit,
         )
         
         job = job_manager.get_job(job_id)
@@ -522,7 +646,7 @@ def api_job_retry(job_id):
 
 @app.route('/api/jobs/<job_id>/tasks/retry', methods=['POST'])
 def api_job_retry_task(job_id):
-    """Retry one failed task in a job."""
+    """Compatibility alias for retrying one task immediately."""
     data = request.get_json() or {}
     ticker = (data.get('ticker') or '').strip().upper()
     date = (data.get('date') or '').strip()
@@ -530,10 +654,34 @@ def api_job_retry_task(job_id):
     if not ticker or not date:
         return jsonify({'success': False, 'error': 'ticker and date are required'}), 400
 
-    ok = job_manager.retry_task(job_id, ticker, date)
+    ok = job_manager.task_action(job_id, ticker, date, 'retry_now')
     if ok:
         return jsonify({'success': True})
-    return jsonify({'success': False, 'error': 'Task not found or not in FAILED state'}), 400
+    return jsonify({'success': False, 'error': 'Task not found or could not be updated'}), 400
+
+
+@app.route('/api/jobs/<job_id>/tasks/action', methods=['POST'])
+def api_job_task_action(job_id):
+    """Perform an action on one task in a job."""
+    data = request.get_json() or {}
+    ticker = (data.get('ticker') or '').strip().upper()
+    date = (data.get('date') or '').strip()
+    action = (data.get('action') or '').strip()
+    delay_seconds = data.get('delay_seconds')
+
+    if not ticker or not date or not action:
+        return jsonify({'success': False, 'error': 'ticker, date, and action are required'}), 400
+
+    if action == 'retry_after':
+        try:
+            delay_seconds = float(delay_seconds)
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'error': 'delay_seconds must be provided for retry_after'}), 400
+
+    ok = job_manager.task_action(job_id, ticker, date, action, delay_seconds)
+    if ok:
+        return jsonify({'success': True})
+    return jsonify({'success': False, 'error': 'Task not found or could not be updated'}), 400
 
 # --- Orderbook Streaming ---
 
@@ -1315,6 +1463,3 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=5151, debug=DEBUG)
     finally:
         _cleanup()
-
-
-

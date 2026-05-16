@@ -34,8 +34,10 @@ LOGIN_PAGE_URL = "https://stockbit.com/login"
 class AutoAuth:
     """Automates Stockbit login via 2Captcha + direct HTTP POST."""
 
-    def __init__(self, token_manager):
+    def __init__(self, token_manager, credentials_manager=None, on_login_success=None):
         self.token_manager = token_manager
+        self.credentials_manager = credentials_manager
+        self.on_login_success = on_login_success
         self._running = False
         self._status = "idle"
         self._progress = []
@@ -165,7 +167,7 @@ class AutoAuth:
 
     # ---- Main flow ----
 
-    def _do_login(self, email: str, password: str):
+    def _do_login(self, email: str, password: str, save_credentials: bool = False):
         """Full login flow: solve captcha -> POST login -> extract token."""
         self._running = True
         self._status = "starting"
@@ -214,6 +216,17 @@ class AutoAuth:
             token_result = self.token_manager.set_token(token, ws_cookie)
 
             if token_result.get("success"):
+                if save_credentials and self.credentials_manager:
+                    cred_result = self.credentials_manager.set_credentials(email, password)
+                    if not cred_result.get("success"):
+                        self._log(f"Credential save failed: {cred_result.get('error')}")
+                resumed_jobs = 0
+                if self.on_login_success:
+                    try:
+                        resumed_jobs = int(self.on_login_success() or 0)
+                    except Exception as e:
+                        logger.error("AutoAuth success callback failed: %s", e, exc_info=True)
+                        self._log(f"Resume callback failed: {e}")
                 self._status = "success"
                 self._result = {
                     "success": True,
@@ -222,8 +235,11 @@ class AutoAuth:
                     "has_cookies": bool(ws_cookie),
                     "cookie_length": len(ws_cookie),
                     "expires_at": token_result.get("expires_at"),
+                    "resumed_jobs": resumed_jobs,
                 }
                 self._log(f"Done! Token expires: {token_result.get('expires_at')}")
+                if resumed_jobs:
+                    self._log(f"Resumed {resumed_jobs} paused job(s)")
             else:
                 self._status = "error"
                 self._result = {
@@ -241,7 +257,13 @@ class AutoAuth:
         finally:
             self._running = False
 
-    def start_login(self, email: str = None, password: str = None, **_kwargs) -> Dict[str, Any]:
+    def start_login(
+        self,
+        email: str = None,
+        password: str = None,
+        save_credentials: bool = False,
+        **_kwargs,
+    ) -> Dict[str, Any]:
         """Kick off the login flow in a background thread."""
         if self._running:
             return {"success": False, "error": "Auto-login already in progress"}
@@ -251,7 +273,7 @@ class AutoAuth:
 
         thread = threading.Thread(
             target=self._do_login,
-            args=(email, password),
+            args=(email, password, save_credentials),
             daemon=True,
             name="auto-auth",
         )

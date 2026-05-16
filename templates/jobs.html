@@ -152,6 +152,13 @@
             color: #fff;
         }
 
+        .task-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-top: 4px;
+        }
+
         .job-card.status-failed { cursor: pointer; }
         .job-card.status-failed:hover { border-color: #dc3545; background: #fff8f8; }
         .job-card.status-cancelled { cursor: pointer; }
@@ -231,6 +238,16 @@
                     <input type="number" id="max-backoff" name="max_backoff_seconds" value="180" 
                            min="5" max="86400" step="1" class="form-control">
                     <small>Caps delay between retries (tasks retry until success; default 3 min)</small>
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="pause-on-rate-limit">
+                        <input type="checkbox" id="pause-on-rate-limit" name="pause_on_rate_limit">
+                        Pause whole job on HTTP 429
+                    </label>
+                    <small>When any task gets rate limited, stop dispatching new tasks until the retry window expires.</small>
                 </div>
             </div>
             
@@ -439,13 +456,18 @@ function clearTickerHistory() {
     }
 }
 
-// Load defaults from localStorage
+// Load shared defaults from the server
 function loadDefaults() {
-    const delay = localStorage.getItem('default_delay') || '3';
-    const limit = localStorage.getItem('default_limit') || '50';
-    
-    document.getElementById('delay').value = delay;
-    document.getElementById('limit').value = limit;
+    fetch('/api/settings/job-defaults')
+        .then(r => r.json())
+        .then(defaults => {
+            document.getElementById('delay').value = defaults.delay || '3';
+            document.getElementById('limit').value = defaults.limit || '50';
+            document.getElementById('pause-on-rate-limit').checked = !!defaults.pause_on_rate_limit;
+        })
+        .catch(err => {
+            console.error('Failed to load job defaults:', err);
+        });
 }
 
 // Create job
@@ -459,7 +481,8 @@ document.getElementById('create-job-form').addEventListener('submit', function(e
         delay_seconds: document.getElementById('delay').value,
         limit: document.getElementById('limit').value,
         parallel_workers: document.getElementById('parallel-workers').value,
-        max_backoff_seconds: document.getElementById('max-backoff').value
+        max_backoff_seconds: document.getElementById('max-backoff').value,
+        pause_on_rate_limit: document.getElementById('pause-on-rate-limit').checked
     };
     
     fetch('/api/jobs/create', {
@@ -485,6 +508,8 @@ document.getElementById('create-job-form').addEventListener('submit', function(e
 
 // Load all jobs
 function loadJobs() {
+    const detailsContent = document.getElementById('job-details-content');
+    const savedDetailsScrollTop = getJobDetailsScrollTop(detailsContent);
     fetch('/api/jobs')
         .then(r => r.json())
         .then(data => {
@@ -493,6 +518,7 @@ function loadJobs() {
             
             if (jobs.length === 0) {
                 container.innerHTML = '<div class="empty-state">No jobs yet. Create one above!</div>';
+                setJobDetailsScrollTop(detailsContent, savedDetailsScrollTop);
                 return;
             }
             
@@ -540,6 +566,14 @@ function loadJobs() {
                         <div class="job-info">
                             <strong>Created:</strong> ${new Date(job.created_at).toLocaleString()} ${job.parallel_workers > 1 ? `🚀 ${job.parallel_workers}x parallel` : ''}
                         </div>
+                        <div class="job-info">
+                            <strong>Pause On 429:</strong> ${job.pause_on_rate_limit ? 'On' : 'Off'}
+                            ${Array.isArray(job.active_workers) ? ` · <strong>Workers:</strong> ${job.active_workers.length}/${job.parallel_workers || 1} active` : ''}
+                        </div>
+                        ${job.rate_limit_pause_seconds_remaining ? `
+                        <div class="job-info" style="color:#d35400;">
+                            ⏸ Cooling down after rate limit · resumes in ${Math.max(0, Math.ceil(job.rate_limit_pause_seconds_remaining))}s
+                        </div>` : ''}
                         ${(isFailed || isCancelled) && job.error ? `
                         <div class="job-info" style="color:#dc3545; font-size:12px;">
                             ⚠ ${job.error}
@@ -550,6 +584,8 @@ function loadJobs() {
                         <div class="job-stats">
                             ✓ ${progress.completed || 0} completed &nbsp;
                             ⟳ ${progress.running || 0} running &nbsp;
+                            ⏳ ${progress.deferred || 0} deferred &nbsp;
+                            ⛔ ${progress.blocked || 0} blocked &nbsp;
                             ✗ ${progress.failed || 0} failed &nbsp;
                             ⋯ ${progress.pending || 0} pending
                         </div>
@@ -560,6 +596,8 @@ function loadJobs() {
                     </div>
                 `;
             }).join('');
+
+            setJobDetailsScrollTop(detailsContent, savedDetailsScrollTop);
         })
         .catch(err => {
             console.error('Failed to load jobs:', err);
@@ -640,24 +678,49 @@ function retryJob(jobId) {
 }
 
 function retryTask(jobId, ticker, date) {
-    if (!confirm(`Retry failed task ${ticker} on ${date}?`)) return;
+    runTaskAction(jobId, ticker, date, 'retry_now');
+}
 
-    fetch(`/api/jobs/${jobId}/tasks/retry`, {
+function retryTaskAfter(jobId, ticker, date) {
+    const value = prompt(`Retry ${ticker} ${date} after how many seconds?`, '60');
+    if (value === null) return;
+    const delay = Number(value);
+    if (!Number.isFinite(delay) || delay <= 0) {
+        showNotification('Enter a positive delay in seconds.', 'error');
+        return;
+    }
+    runTaskAction(jobId, ticker, date, 'retry_after', delay);
+}
+
+function skipTask(jobId, ticker, date) {
+    if (!confirm(`Skip task ${ticker} on ${date}?`)) return;
+    runTaskAction(jobId, ticker, date, 'skip');
+}
+
+function runTaskAction(jobId, ticker, date, action, delaySeconds = null) {
+    const payload = { ticker, date, action };
+    if (delaySeconds !== null) {
+        payload.delay_seconds = delaySeconds;
+    }
+    fetch(`/api/jobs/${jobId}/tasks/action`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker, date })
+        body: JSON.stringify(payload)
     })
         .then(r => r.json())
         .then(data => {
             if (data.success) {
-                showNotification(`Task ${ticker} ${date} re-queued`, 'success');
+                const actionLabel = action === 'retry_now'
+                    ? 're-queued now'
+                    : (action === 'retry_after' ? `scheduled in ${delaySeconds}s` : 'skipped');
+                showNotification(`Task ${ticker} ${date} ${actionLabel}`, 'success');
                 loadJobs();
                 const content = document.getElementById('job-details-content');
                 if (content) {
                     loadJobDetails(jobId, content);
                 }
             } else {
-                showNotification('Could not retry task: ' + (data.error || 'Unknown error'), 'error');
+                showNotification('Could not update task: ' + (data.error || 'Unknown error'), 'error');
             }
         })
         .catch(err => showNotification('Request failed: ' + err.message, 'error'));
@@ -695,6 +758,22 @@ function escapeHtml(value) {
         .replace(/'/g, '&#39;');
 }
 
+function getJobDetailsScrollTop(content) {
+    if (!content) return 0;
+    const details = content.querySelector('.job-details');
+    return details ? details.scrollTop : content.scrollTop;
+}
+
+function setJobDetailsScrollTop(content, scrollTop) {
+    if (!content) return;
+    const details = content.querySelector('.job-details');
+    if (details) {
+        details.scrollTop = scrollTop;
+    } else {
+        content.scrollTop = scrollTop;
+    }
+}
+
 // matches stockbit_client.FetchEndReason strings — short labels for the jobs table
 const FETCH_END_REASON_LABELS = {
     ok_empty_page: 'Stop: empty page (no more rows for that day)',
@@ -704,6 +783,18 @@ const FETCH_END_REASON_LABELS = {
     fetch_interrupted: 'Incomplete day: later page failed (timeout/network) — not saved as complete',
     cancelled_partial: 'Pause/cancel mid-fetch — partial data not saved',
     cancelled: 'Cancelled before any data',
+};
+
+const DEFER_REASON_LABELS = {
+    rate_limit: 'Deferred by rate limit',
+    error_backoff: 'Deferred by retry backoff',
+    manual_delay: 'Deferred manually'
+};
+
+const BLOCKED_REASON_LABELS = {
+    token_refresh: 'Blocked waiting for token refresh',
+    captcha_required: 'Blocked waiting for captcha handling',
+    manual_pause: 'Blocked by manual pause'
 };
 
 function taskKey(task) {
@@ -741,12 +832,21 @@ function getTaskDisplay(task) {
         } else {
             statusDisplay = `RUNNING${retryLabel}`;
         }
+    } else if (task.status === 'DEFERRED') {
+        const remaining = task.retry_after_seconds_remaining;
+        const countdown = Number.isFinite(remaining) ? ` (${Math.max(0, Math.ceil(remaining))}s)` : '';
+        statusDisplay = `DEFERRED${countdown}`;
+    } else if (task.status === 'BLOCKED') {
+        statusDisplay = 'BLOCKED';
     } else if (task.records_fetched > 0) {
         progressInfo = `<span class="task-count">${task.records_fetched} records (${task.pages_fetched || 1} pages)</span>`;
     }
 
-    const attemptsInfo = task.attempts > 1
-        ? `<span class="task-count" style="color:#6c757d;">Attempts: ${task.attempts}</span>`
+    const attemptsParts = [];
+    if (task.attempts > 0) attemptsParts.push(`Attempts: ${task.attempts}`);
+    if (task.rate_limit_count > 0) attemptsParts.push(`429s: ${task.rate_limit_count}`);
+    const attemptsInfo = attemptsParts.length
+        ? `<span class="task-count" style="color:#6c757d;">${attemptsParts.join(' · ')}</span>`
         : '';
 
     return { statusDisplay, progressInfo, attemptsInfo };
@@ -756,9 +856,14 @@ function buildTaskItemMarkup(jobId, task) {
     const { statusDisplay, progressInfo, attemptsInfo } = getTaskDisplay(task);
     const safeTicker = String(task.ticker || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const safeDate = String(task.date || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-    const retryButton = task.status === 'FAILED'
-        ? `<button class="btn-retry-task" onclick="event.stopPropagation(); retryTask('${jobId}', '${safeTicker}', '${safeDate}')" title="Retry this task only">↺ Retry Task</button>`
-        : '';
+    const canAct = ['FAILED', 'DEFERRED', 'BLOCKED'].includes(task.status);
+    const actionButtons = canAct ? `
+        <div class="task-actions">
+            <button class="btn-retry-task" onclick="event.stopPropagation(); retryTask('${jobId}', '${safeTicker}', '${safeDate}')" title="Retry now">↺ Retry Now</button>
+            <button class="btn-retry-task" onclick="event.stopPropagation(); retryTaskAfter('${jobId}', '${safeTicker}', '${safeDate}')" title="Retry later">⏱ Retry After</button>
+            <button class="btn-retry-task" onclick="event.stopPropagation(); skipTask('${jobId}', '${safeTicker}', '${safeDate}')" title="Skip task">⤼ Skip</button>
+        </div>
+    ` : '';
     const er = task.end_reason;
     const erClass = er === 'fetch_interrupted' ? 'interrupted' : '';
     const erLine = er
@@ -768,16 +873,28 @@ function buildTaskItemMarkup(jobId, task) {
     const skipBadge = task.skip_reason
         ? `<span class="task-skip-reason ${skipCls}" title="${escapeHtml(task.skip_reason)}">${escapeHtml(task.skip_reason)}</span>`
         : '';
+    const deferLine = task.defer_reason
+        ? `<span class="task-end-reason" title="${escapeHtml(task.defer_reason)}">${escapeHtml(DEFER_REASON_LABELS[task.defer_reason] || task.defer_reason)}</span>`
+        : '';
+    const blockedLine = task.blocked_reason
+        ? `<span class="task-end-reason interrupted" title="${escapeHtml(task.blocked_reason)}">${escapeHtml(BLOCKED_REASON_LABELS[task.blocked_reason] || task.blocked_reason)}</span>`
+        : '';
+    const workerLine = task.active_worker_id
+        ? `<span class="task-count">Worker: ${escapeHtml(task.active_worker_id)}</span>`
+        : '';
     return `
         <div class="task-item task-${task.status.toLowerCase()}" data-task-key="${escapeHtml(taskKey(task))}">
             <span class="task-date">${escapeHtml(task.date)}</span>
             <span class="task-status">${escapeHtml(statusDisplay)}</span>
             ${progressInfo}
             ${attemptsInfo}
+            ${workerLine}
             ${skipBadge}
             ${task.error && task.status !== 'RUNNING' ? `<span class="task-error-text">⚠ ${escapeHtml(task.error)}</span>` : ''}
+            ${deferLine}
+            ${blockedLine}
             ${erLine}
-            ${retryButton}
+            ${actionButtons}
         </div>
     `;
 }
@@ -803,6 +920,7 @@ function buildTickerMarkup(jobId, ticker, tasks) {
 function renderJobDetailsMarkup(job) {
     const progress = job.progress || {};
     const tasksByTicker = groupTasksByTicker(job.tasks || []);
+    const workers = Array.isArray(job.active_workers) ? job.active_workers : [];
     return `
         <div class="job-details" data-job-id="${escapeHtml(job.job_id)}">
             <div class="detail-section">
@@ -825,6 +943,24 @@ function renderJobDetailsMarkup(job) {
                     <strong>Progress:</strong> <span id="job-progress-value">${progress.completed || 0}/${progress.total || 0} tasks</span>
                 </div>
                 <div class="detail-row">
+                    <strong>Pause whole job on 429:</strong> ${job.pause_on_rate_limit ? 'On' : 'Off'}
+                </div>
+                ${job.rate_limit_pause_seconds_remaining ? `
+                <div class="detail-row">
+                    <strong>429 Cooldown:</strong> resumes in ${Math.max(0, Math.ceil(job.rate_limit_pause_seconds_remaining))}s
+                </div>
+                ` : ''}
+                <div class="detail-row">
+                    <strong>Task States:</strong>
+                    <span>
+                        running ${progress.running || 0},
+                        deferred ${progress.deferred || 0},
+                        blocked ${progress.blocked || 0},
+                        pending ${progress.pending || 0},
+                        failed ${progress.failed || 0}
+                    </span>
+                </div>
+                <div class="detail-row">
                     <strong>Created:</strong> <span id="job-created-value">${new Date(job.created_at).toLocaleString()}</span>
                 </div>
                 ${job.started_at ? `
@@ -845,6 +981,20 @@ function renderJobDetailsMarkup(job) {
             </div>
 
             <div class="detail-section">
+                <h3>Workers</h3>
+                <div id="worker-groups">
+                    ${workers.length ? workers.map(worker => `
+                        <div class="task-item task-running">
+                            <span class="task-status">${escapeHtml(worker.worker_id)}</span>
+                            <span>${escapeHtml(worker.ticker)} ${escapeHtml(worker.date)}</span>
+                            <span class="task-count">Attempt ${escapeHtml(worker.attempt || 1)}</span>
+                            <span class="task-count">Page ${escapeHtml(worker.current_page || 0)}</span>
+                        </div>
+                    `).join('') : '<div class="text-muted">No active workers right now.</div>'}
+                </div>
+            </div>
+
+            <div class="detail-section">
                 <h3>Tasks by Ticker</h3>
                 <div id="ticker-groups">
                     ${Object.entries(tasksByTicker).map(([ticker, tasks]) => buildTickerMarkup(job.job_id, ticker, tasks)).join('')}
@@ -855,91 +1005,9 @@ function renderJobDetailsMarkup(job) {
 }
 
 function applyJobDetailsUpdate(content, job) {
-    const details = content.querySelector('.job-details');
-    if (!details || details.dataset.jobId !== job.job_id) {
-        content.innerHTML = renderJobDetailsMarkup(job);
-        return;
-    }
-
-    // keep the same scroll location while the task list updates
-    const previousScrollTop = details.scrollTop;
-    const progress = job.progress || {};
-
-    const errorSlot = content.querySelector('#job-error-slot');
-    if (errorSlot) {
-        errorSlot.innerHTML = job.error ? `
-            <div class="job-error-banner">
-                <span class="error-icon">⚠️</span>
-                <div class="error-text"><strong>Error:</strong> ${escapeHtml(job.error)}</div>
-            </div>
-        ` : '';
-    }
-
-    const statusBadge = content.querySelector('#job-status-badge');
-    if (statusBadge) {
-        statusBadge.className = `status-badge status-${job.status.toLowerCase()}`;
-        statusBadge.textContent = job.status;
-    }
-
-    const progressValue = content.querySelector('#job-progress-value');
-    if (progressValue) {
-        progressValue.textContent = `${progress.completed || 0}/${progress.total || 0} tasks`;
-    }
-
-    const retrySlot = content.querySelector('#job-retry-slot');
-    if (retrySlot) {
-        retrySlot.innerHTML = job.status === 'FAILED'
-            ? `<button class="btn-retry" onclick="retryJob('${job.job_id}'); closeJobModal();">↺ Retry Failed Tasks</button>`
-            : '';
-    }
-
-    const startedRow = content.querySelector('#job-started-row');
-    if (job.started_at) {
-        if (startedRow) {
-            const startedValue = content.querySelector('#job-started-value');
-            if (startedValue) startedValue.textContent = new Date(job.started_at).toLocaleString();
-        } else {
-            const createdRow = content.querySelector('#job-created-value')?.closest('.detail-row');
-            if (createdRow) {
-                createdRow.insertAdjacentHTML('afterend', `
-                    <div class="detail-row" id="job-started-row">
-                        <strong>Started:</strong> <span id="job-started-value">${new Date(job.started_at).toLocaleString()}</span>
-                    </div>
-                `);
-            }
-        }
-    } else if (startedRow) {
-        startedRow.remove();
-    }
-
-    const completedRow = content.querySelector('#job-completed-row');
-    if (job.completed_at) {
-        if (completedRow) {
-            const completedValue = content.querySelector('#job-completed-value');
-            if (completedValue) completedValue.textContent = new Date(job.completed_at).toLocaleString();
-        } else {
-            const startedAnchor = content.querySelector('#job-started-row') || content.querySelector('#job-created-value')?.closest('.detail-row');
-            if (startedAnchor) {
-                startedAnchor.insertAdjacentHTML('afterend', `
-                    <div class="detail-row" id="job-completed-row">
-                        <strong>Completed:</strong> <span id="job-completed-value">${new Date(job.completed_at).toLocaleString()}</span>
-                    </div>
-                `);
-            }
-        }
-    } else if (completedRow) {
-        completedRow.remove();
-    }
-
-    const tasksByTicker = groupTasksByTicker(job.tasks || []);
-    const tickerGroupsContainer = content.querySelector('#ticker-groups');
-    if (tickerGroupsContainer) {
-        tickerGroupsContainer.innerHTML = Object.entries(tasksByTicker)
-            .map(([ticker, tasks]) => buildTickerMarkup(job.job_id, ticker, tasks))
-            .join('');
-    }
-
-    details.scrollTop = previousScrollTop;
+    const previousScrollTop = getJobDetailsScrollTop(content);
+    content.innerHTML = renderJobDetailsMarkup(job);
+    setJobDetailsScrollTop(content, previousScrollTop);
 }
 
 function loadJobDetails(jobId, content) {
@@ -981,4 +1049,3 @@ window.addEventListener('beforeunload', () => {
 });
 </script>
 {% endblock %}
-

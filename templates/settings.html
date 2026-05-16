@@ -92,6 +92,16 @@
                 </div>
             </div>
 
+            <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
+                <button class="btn btn-outline-primary btn-sm" type="button" onclick="saveCredentials()">
+                    <i class="bi bi-save"></i> Save Credentials
+                </button>
+                <button class="btn btn-outline-danger btn-sm" type="button" onclick="clearCredentials()">
+                    <i class="bi bi-trash"></i> Clear Saved Credentials
+                </button>
+                <small id="saved-credentials-status" class="text-muted">Checking saved credentials...</small>
+            </div>
+
             <!-- Progress Log -->
             <div id="auto-login-progress" style="display:none;">
                 <h6 class="text-muted"><i class="bi bi-terminal"></i> Progress</h6>
@@ -253,6 +263,21 @@
                         Number of records to fetch per request (max 200)
                     </small>
                 </div>
+
+                <div class="mb-3">
+                    <label for="default-pause-on-rate-limit" class="form-label">
+                        Default 429 Cooldown Behavior:
+                    </label>
+                    <div>
+                        <label>
+                            <input type="checkbox" id="default-pause-on-rate-limit">
+                            Pause the whole job when any task gets HTTP 429
+                        </label>
+                    </div>
+                    <small class="text-muted">
+                        New jobs will stop dispatching new tasks until the retry window expires.
+                    </small>
+                </div>
                 
                 <button type="submit" class="btn btn-primary">
                     <i class="fas fa-save"></i> Save Defaults
@@ -268,6 +293,7 @@ document.addEventListener('DOMContentLoaded', () => {
     checkTokenStatus();
     loadDefaults();
     checkCaptchaConfig();
+    checkCredentialsStatus();
 });
 
 function checkCaptchaConfig() {
@@ -385,10 +411,12 @@ function pollAutoLoginStatus() {
                             <i class="bi bi-check-circle"></i> <strong>Token captured successfully!</strong><br>
                             Token: ${data.result.token_length} chars<br>
                             Cookies: ${data.result.has_cookies ? data.result.cookie_length + ' chars' : 'Not captured'}<br>
-                            ${data.result.expires_at ? 'Expires: ' + new Date(data.result.expires_at).toLocaleString() : ''}
+                            ${data.result.expires_at ? 'Expires: ' + new Date(data.result.expires_at).toLocaleString() + '<br>' : ''}
+                            ${data.result.resumed_jobs ? 'Resumed jobs: ' + data.result.resumed_jobs : ''}
                         </div>`;
                     // Refresh token status
                     checkTokenStatus();
+                    checkCredentialsStatus();
                 } else {
                     badge.className = 'badge bg-danger';
                     resultDiv.style.display = 'block';
@@ -403,6 +431,61 @@ function pollAutoLoginStatus() {
         .catch(err => {
             console.error('Poll error:', err);
         });
+}
+
+function checkCredentialsStatus() {
+    const el = document.getElementById('saved-credentials-status');
+    fetch('/api/credentials/status')
+        .then(res => res.json())
+        .then(data => {
+            if (data.has_credentials) {
+                el.innerHTML = `<span class="text-success"><i class="bi bi-check-circle-fill"></i> Saved for ${data.email}</span>`;
+            } else {
+                el.innerHTML = `<span class="text-warning"><i class="bi bi-exclamation-triangle"></i> No saved credentials for automatic refresh</span>`;
+            }
+        })
+        .catch(err => {
+            console.error('Failed to load credentials status:', err);
+            el.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle-fill"></i> Could not load credentials status</span>`;
+        });
+}
+
+function saveCredentials() {
+    const email = document.getElementById('auto-login-email').value.trim();
+    const password = document.getElementById('auto-login-password').value;
+    if (!email || !password) {
+        showNotification('Enter email and password first.', 'error');
+        return;
+    }
+    fetch('/api/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+    })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                showNotification('Credentials saved for automatic refresh.', 'success');
+                checkCredentialsStatus();
+            } else {
+                showNotification('Could not save credentials: ' + (data.error || 'Unknown error'), 'error');
+            }
+        })
+        .catch(err => showNotification('Request failed: ' + err.message, 'error'));
+}
+
+function clearCredentials() {
+    fetch('/api/credentials', { method: 'DELETE' })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                showNotification('Saved credentials cleared.', 'success');
+                checkCredentialsStatus();
+            } else {
+                showNotification('Could not clear credentials: ' + (data.error || 'Unknown error'), 'error');
+            }
+        })
+        .catch(err => showNotification('Request failed: ' + err.message, 'error'));
 }
 
 function checkTokenStatus() {
@@ -618,16 +701,16 @@ document.getElementById('token-form').addEventListener('submit', (e) => {
 
 // load defaults
 function loadDefaults() {
-    const saved = localStorage.getItem('job_defaults');
-    if (saved) {
-        try {
-            const defaults = JSON.parse(saved);
+    fetch('/api/settings/job-defaults')
+        .then(res => res.json())
+        .then(defaults => {
             document.getElementById('default-delay').value = defaults.delay || 3;
             document.getElementById('default-limit').value = defaults.limit || 50;
-        } catch (e) {
+            document.getElementById('default-pause-on-rate-limit').checked = !!defaults.pause_on_rate_limit;
+        })
+        .catch(e => {
             console.error('Failed to load defaults:', e);
-        }
-    }
+        });
 }
 
 // save defaults
@@ -636,11 +719,24 @@ document.getElementById('defaults-form').addEventListener('submit', (e) => {
     
     const defaults = {
         delay: parseFloat(document.getElementById('default-delay').value),
-        limit: parseInt(document.getElementById('default-limit').value)
+        limit: parseInt(document.getElementById('default-limit').value),
+        pause_on_rate_limit: document.getElementById('default-pause-on-rate-limit').checked
     };
     
-    localStorage.setItem('job_defaults', JSON.stringify(defaults));
-    showNotification('Defaults saved!', 'success');
+    fetch('/api/settings/job-defaults', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(defaults)
+    })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                showNotification('Defaults saved!', 'success');
+            } else {
+                showNotification('Could not save defaults: ' + (data.error || 'Unknown error'), 'error');
+            }
+        })
+        .catch(err => showNotification('Request failed: ' + err.message, 'error'));
 });
 
 function showNotification(message, type) {
