@@ -217,6 +217,7 @@ class JobManager:
         self._next_job_id: Optional[str] = None
         self._notification_callback = None
         self._auto_refresh_callback: Optional[Callable[[str, str, str], Any]] = None
+        self._job_rate_limit_streaks: Dict[str, int] = {}
         self._load_jobs_from_db()
 
     def set_notification_callback(self, callback):
@@ -913,12 +914,18 @@ class JobManager:
             task.date,
         )
 
-    def _scaled_rate_limit_wait(self, task: Task, raw_wait: Any) -> float:
+    def _reset_rate_limit_streak(self, job_id: str) -> None:
+        self._job_rate_limit_streaks[job_id] = 0
+
+    def _current_rate_limit_streak(self, job_id: str) -> int:
+        return max(0, int(self._job_rate_limit_streaks.get(job_id, 0)))
+
+    def _scaled_rate_limit_wait(self, job: Job, raw_wait: Any) -> float:
         try:
             base_wait = max(RATE_LIMIT_MIN_SECONDS, min(float(raw_wait), RATE_LIMIT_MAX_SECONDS))
         except (TypeError, ValueError):
             base_wait = float(RATE_LIMIT_FALLBACK_SECONDS)
-        multiplier = max(1, task.rate_limit_count + 1)
+        multiplier = self._current_rate_limit_streak(job.job_id) + 1
         return min(float(RATE_LIMIT_MAX_SECONDS), base_wait * multiplier)
 
     def _activate_rate_limit_pause(self, job: Job, wait_seconds: float) -> None:
@@ -932,6 +939,7 @@ class JobManager:
     def _park_task_for_rate_limit(self, job: Job, task: Task, wait_seconds: float, *, count_rate_limit: bool) -> None:
         if count_rate_limit:
             task.rate_limit_count += 1
+            self._job_rate_limit_streaks[job.job_id] = self._current_rate_limit_streak(job.job_id) + 1
         task.status = TaskStatus.RUNNING
         task.defer_reason = None
         task.blocked_reason = None
@@ -1135,6 +1143,7 @@ class JobManager:
             save_result = self.storage.append_task_trades(job.job_id, task.ticker, task.date, trades)
             if not save_result.get('success'):
                 raise RuntimeError(save_result.get('error', 'Failed to persist checkpoint page'))
+            self._reset_rate_limit_streak(job.job_id)
             task.resume_trade_number = checkpoint.get('resume_trade_number')
             task.checkpoint_pages_fetched = checkpoint.get('checkpoint_pages_fetched', 0) or 0
             task.checkpoint_records_fetched = checkpoint.get('checkpoint_records_fetched', 0) or 0
@@ -1228,6 +1237,7 @@ class JobManager:
                     filename,
                 )
                 if save_result.get('success'):
+                    self._reset_rate_limit_streak(job.job_id)
                     task.status = TaskStatus.COMPLETED
                     task.records_fetched = result.get('count', 0)
                     task.pages_fetched = result.get('successful_pages_fetched', result.get('pages_fetched', 0))
@@ -1250,7 +1260,7 @@ class JobManager:
 
             if result.get('rate_limited'):
                 self._apply_checkpoint_from_result(task, result)
-                wait_secs = self._scaled_rate_limit_wait(task, result.get('retry_after_seconds'))
+                wait_secs = self._scaled_rate_limit_wait(job, result.get('retry_after_seconds'))
                 self._activate_rate_limit_pause(job, wait_secs)
                 self._park_task_for_rate_limit(job, task, wait_secs, count_rate_limit=True)
                 logger.warning(

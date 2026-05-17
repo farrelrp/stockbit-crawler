@@ -104,6 +104,17 @@ class JobManagerBase(unittest.TestCase):
 
 
 class TestJobManager429(JobManagerBase):
+    def test_consecutive_rate_limits_escalate_and_progress_resets_to_base_wait(self):
+        jm = self.make_manager()
+        job = self.make_job(tasks=[Task(ticker="A", date="2024-01-01")])
+        self.assertEqual(jm._scaled_rate_limit_wait(job, 60.0), 60.0)
+        jm._park_task_for_rate_limit(job, job.tasks[0], 60.0, count_rate_limit=True)
+        self.assertEqual(jm._scaled_rate_limit_wait(job, 60.0), 120.0)
+        jm._park_task_for_rate_limit(job, job.tasks[0], 120.0, count_rate_limit=True)
+        self.assertEqual(jm._scaled_rate_limit_wait(job, 60.0), 180.0)
+        jm._reset_rate_limit_streak(job.job_id)
+        self.assertEqual(jm._scaled_rate_limit_wait(job, 60.0), 60.0)
+
     def test_rate_limit_pauses_job_and_keeps_task_running(self):
         jm = self.make_manager()
         jm.client.fetch_running_trade.return_value = {
