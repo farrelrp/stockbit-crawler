@@ -11,7 +11,7 @@ from config import CONFIG_DIR, DEFAULT_DELAY_SECONDS, DEFAULT_LIMIT
 logger = logging.getLogger(__name__)
 
 SETTINGS_FILE = CONFIG_DIR / 'app_settings.json'
-DEFAULT_PAUSE_ON_RATE_LIMIT = False
+DEFAULT_PAUSE_ON_RATE_LIMIT = True
 
 
 class SettingsStore:
