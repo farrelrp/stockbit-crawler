@@ -19,6 +19,19 @@
 </div>
 
 <script>
+function formatFileSize(sizeBytes) {
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let size = sizeBytes;
+    let unitIndex = 0;
+
+    while (size >= 1024 && unitIndex < units.length - 1) {
+        size /= 1024;
+        unitIndex += 1;
+    }
+
+    return `${size.toFixed(2)} ${units[unitIndex]}`;
+}
+
 function loadFiles() {
     fetch('/api/files')
         .then(r => r.json())
@@ -43,13 +56,13 @@ function loadFiles() {
                     </thead>
                     <tbody>
                         ${files.map(file => {
-                            const sizeKB = (file.size_bytes / 1024).toFixed(2);
+                            const formattedSize = formatFileSize(file.size_bytes);
                             const modified = new Date(file.modified).toLocaleString();
                             
                             return `
                                 <tr>
                                     <td><code>${file.filename}</code></td>
-                                    <td>${sizeKB} KB</td>
+                                    <td>${formattedSize}</td>
                                     <td>${modified}</td>
                                     <td>
                                         <a href="/api/files/download/${file.filename}" 
@@ -75,4 +88,3 @@ function loadFiles() {
 loadFiles();
 </script>
 {% endblock %}
-
