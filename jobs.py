@@ -3,11 +3,10 @@ Job scheduler and manager for fetching trade data.
 """
 import json
 import os
-import random
 import threading
 import time
 import uuid
-from typing import List, Dict, Any, Optional, Callable, Tuple
+from typing import List, Dict, Any, Optional, Callable
 from datetime import datetime, timedelta
 from enum import Enum
 from dataclasses import dataclass, asdict, field, fields
@@ -34,15 +33,9 @@ BLOCKED_REASON_TOKEN_REFRESH = 'token_refresh'
 BLOCKED_REASON_CAPTCHA_REQUIRED = 'captcha_required'
 BLOCKED_REASON_MANUAL_PAUSE = 'manual_pause'
 DEFER_REASON_CURSOR_REGRESSION = 'cursor_regression'
-DEFER_REASON_PAGE1_FINGERPRINT_MISMATCH = 'page1_fingerprint_mismatch'
-DEFER_REASON_SAME_TICKER_CROSS_DATE_CONTAMINATION = 'same_ticker_cross_date_contamination'
 
 _MIN_BACKOFF_CAP = 5.0
 _MAX_BACKOFF_CAP = 24 * 3600.0
-_TICKER_QUARANTINE_SECONDS = 600.0
-_CONTAMINATION_RETRY_SECONDS = 30.0
-_SAME_TICKER_START_JITTER_MIN = 0.3
-_SAME_TICKER_START_JITTER_MAX = 1.5
 
 
 def _load_holidays() -> Dict[str, str]:
@@ -224,10 +217,6 @@ class JobManager:
         self._next_job_id: Optional[str] = None
         self._notification_callback = None
         self._auto_refresh_callback: Optional[Callable[[str, str, str], Any]] = None
-        self._runtime_lock = threading.Lock()
-        self._ticker_quarantine_until: Dict[str, datetime] = {}
-        self._active_page1_fingerprints: Dict[Tuple[str, str, str], str] = {}
-        self._task_contamination_flags: Dict[Tuple[str, str, str], str] = {}
         self._load_jobs_from_db()
 
     def set_notification_callback(self, callback):
@@ -428,10 +417,6 @@ class JobManager:
         lower = error.lower()
         if 'rate limit' in lower or '429' in lower:
             return DEFER_REASON_RATE_LIMIT
-        if 'page-1' in lower or 'fingerprint' in lower:
-            return DEFER_REASON_PAGE1_FINGERPRINT_MISMATCH
-        if 'contamination' in lower or 'same ticker' in lower:
-            return DEFER_REASON_SAME_TICKER_CROSS_DATE_CONTAMINATION
         if 'regressed' in lower or 'checkpoint' in lower:
             return DEFER_REASON_CURSOR_REGRESSION
         return DEFER_REASON_ERROR_BACKOFF
@@ -512,6 +497,9 @@ class JobManager:
     def _task_ready_to_run(self, task: Task) -> bool:
         return task.status == TaskStatus.PENDING
 
+    def _task_ready_to_resume(self, task: Task) -> bool:
+        return task.status == TaskStatus.RUNNING and not task.active_worker_id
+
     def _job_has_open_tasks(self, job: Job) -> bool:
         return any(
             task.status in (
@@ -536,7 +524,7 @@ class JobManager:
         return min(retry_times) if retry_times else None
 
     def _current_rate_limit_pause_until(self, job: Job) -> Optional[datetime]:
-        if not job.pause_on_rate_limit or not job.rate_limit_pause_until:
+        if not job.rate_limit_pause_until:
             return None
         pause_until = _parse_iso(job.rate_limit_pause_until)
         if not pause_until:
@@ -546,91 +534,6 @@ class JobManager:
             self._persist_job(job)
             return None
         return pause_until
-
-    @staticmethod
-    def _task_runtime_key(job_id: str, ticker: str, date: str) -> Tuple[str, str, str]:
-        return (job_id, ticker, date)
-
-    def _is_ticker_quarantined(self, ticker: str) -> bool:
-        with self._runtime_lock:
-            deadline = self._ticker_quarantine_until.get(ticker)
-            if deadline is None:
-                return False
-            if deadline <= now_wib():
-                self._ticker_quarantine_until.pop(ticker, None)
-                return False
-            return True
-
-    def _quarantine_ticker(self, ticker: str, seconds: float = _TICKER_QUARANTINE_SECONDS) -> None:
-        with self._runtime_lock:
-            new_deadline = now_wib() + timedelta(seconds=seconds)
-            current = self._ticker_quarantine_until.get(ticker)
-            if current is None or current < new_deadline:
-                self._ticker_quarantine_until[ticker] = new_deadline
-
-    def _has_task_contamination_flag(self, job_id: str, ticker: str, date: str) -> bool:
-        key = self._task_runtime_key(job_id, ticker, date)
-        with self._runtime_lock:
-            return key in self._task_contamination_flags
-
-    def _pop_task_contamination_flag(self, job_id: str, ticker: str, date: str) -> Optional[str]:
-        key = self._task_runtime_key(job_id, ticker, date)
-        with self._runtime_lock:
-            return self._task_contamination_flags.pop(key, None)
-
-    def _clear_active_page1_fingerprint(self, job_id: str, ticker: str, date: str) -> None:
-        key = self._task_runtime_key(job_id, ticker, date)
-        with self._runtime_lock:
-            self._active_page1_fingerprints.pop(key, None)
-
-    def _register_active_page1_fingerprint(self, job: Job, task: Task, worker_id: str, fingerprint: str) -> None:
-        key = self._task_runtime_key(job.job_id, task.ticker, task.date)
-        collision_message: Optional[str] = None
-        with self._runtime_lock:
-            self._active_page1_fingerprints[key] = fingerprint
-            for other_key, other_fingerprint in self._active_page1_fingerprints.items():
-                if other_key == key:
-                    continue
-                _, other_ticker, other_date = other_key
-                if other_ticker != task.ticker or other_date == task.date:
-                    continue
-                if other_fingerprint != fingerprint:
-                    continue
-                collision_message = (
-                    f"Same ticker contamination detected for {task.ticker}: "
-                    f"{task.date} matched page-1 fingerprint with {other_date}"
-                )
-                self._task_contamination_flags[key] = collision_message
-                self._task_contamination_flags[other_key] = collision_message
-                break
-        if collision_message:
-            self._quarantine_ticker(task.ticker)
-            logger.warning(
-                "%s; quarantining %s for %.0fs (worker %s)",
-                collision_message,
-                task.ticker,
-                _TICKER_QUARANTINE_SECONDS,
-                worker_id,
-            )
-
-    def _maybe_stagger_same_ticker_start(self, job: Job, task: Task, worker_id: str) -> None:
-        with job.progress_lock:
-            same_ticker_workers = [
-                info for info in job.active_workers.values()
-                if info.get('ticker') == task.ticker
-            ]
-        if len(same_ticker_workers) <= 1:
-            return
-        delay = random.uniform(_SAME_TICKER_START_JITTER_MIN, _SAME_TICKER_START_JITTER_MAX)
-        logger.info(
-            "Staggering %s %s on %s by %.2fs (%s active worker(s) on ticker)",
-            task.ticker,
-            task.date,
-            worker_id,
-            delay,
-            len(same_ticker_workers),
-        )
-        time.sleep(delay)
 
     def _dispatchable_tasks(
         self,
@@ -644,10 +547,15 @@ class JobManager:
         if self._current_rate_limit_pause_until(job):
             return []
 
-        chosen: List[Task] = []
         inflight_tasks = list(inflight.values())
-        inflight_tickers = {task.ticker for task in inflight_tasks}
-        chosen_tickers = set()
+        resumable = [
+            task for task in job.tasks
+            if self._task_ready_to_resume(task) and task not in inflight_tasks
+        ]
+        if resumable:
+            return resumable[:capacity]
+
+        chosen: List[Task] = []
         for task in job.tasks:
             if len(chosen) >= capacity:
                 break
@@ -655,13 +563,7 @@ class JobManager:
                 continue
             if task in inflight_tasks or task in chosen:
                 continue
-            if (
-                self._is_ticker_quarantined(task.ticker)
-                and (task.ticker in inflight_tickers or task.ticker in chosen_tickers)
-            ):
-                continue
             chosen.append(task)
-            chosen_tickers.add(task.ticker)
         return chosen
 
     def _maybe_fire_progress_milestones(self, job: Job) -> None:
@@ -1011,15 +913,51 @@ class JobManager:
             task.date,
         )
 
+    def _scaled_rate_limit_wait(self, task: Task, raw_wait: Any) -> float:
+        try:
+            base_wait = max(RATE_LIMIT_MIN_SECONDS, min(float(raw_wait), RATE_LIMIT_MAX_SECONDS))
+        except (TypeError, ValueError):
+            base_wait = float(RATE_LIMIT_FALLBACK_SECONDS)
+        multiplier = max(1, task.rate_limit_count + 1)
+        return min(float(RATE_LIMIT_MAX_SECONDS), base_wait * multiplier)
+
     def _activate_rate_limit_pause(self, job: Job, wait_seconds: float) -> None:
-        if not job.pause_on_rate_limit:
-            return
         new_deadline = now_wib() + timedelta(seconds=wait_seconds)
         current_deadline = _parse_iso(job.rate_limit_pause_until)
         if current_deadline and current_deadline > new_deadline:
             new_deadline = current_deadline
         job.rate_limit_pause_until = new_deadline.isoformat()
         self._persist_job(job)
+
+    def _park_task_for_rate_limit(self, job: Job, task: Task, wait_seconds: float, *, count_rate_limit: bool) -> None:
+        if count_rate_limit:
+            task.rate_limit_count += 1
+        task.status = TaskStatus.RUNNING
+        task.defer_reason = None
+        task.blocked_reason = None
+        task.retry_after_at = None
+        task.current_page = 0
+        task.active_worker_id = None
+        task.error = (
+            f"Rate limited — pausing job for {wait_seconds:.0f}s, then resuming from checkpoint..."
+        )
+        task.last_error_at = now_wib().isoformat()
+        self._save_task_row(job, task)
+
+    @staticmethod
+    def _apply_checkpoint_from_result(task: Task, result: Dict[str, Any]) -> None:
+        task.resume_trade_number = result.get('resume_trade_number', task.resume_trade_number)
+        task.checkpoint_pages_fetched = result.get('checkpoint_pages_fetched', task.checkpoint_pages_fetched) or 0
+        task.checkpoint_records_fetched = result.get('checkpoint_records_fetched', task.checkpoint_records_fetched) or 0
+        task.checkpoint_first_trade_number = result.get(
+            'checkpoint_first_trade_number', task.checkpoint_first_trade_number
+        )
+        task.checkpoint_last_trade_number = result.get(
+            'checkpoint_last_trade_number', task.checkpoint_last_trade_number
+        )
+        task.checkpoint_first_time = result.get('checkpoint_first_time', task.checkpoint_first_time)
+        task.checkpoint_last_time = result.get('checkpoint_last_time', task.checkpoint_last_time)
+        task.page1_fingerprint = result.get('page1_fingerprint', task.page1_fingerprint)
 
     def _sleep_until_next_event(self, job: Job) -> None:
         deadlines = []
@@ -1157,14 +1095,22 @@ class JobManager:
         if self._is_job_cancelled(job):
             return
 
+        continuing_task = (
+            task.status == TaskStatus.RUNNING
+            or task.resume_trade_number is not None
+            or task.checkpoint_pages_fetched > 0
+            or task.checkpoint_records_fetched > 0
+        )
         resume_trade_number = task.resume_trade_number
         checkpoint_records = task.checkpoint_records_fetched
         checkpoint_pages = task.checkpoint_pages_fetched
-        expected_page1_fingerprint = task.page1_fingerprint
         resuming = bool(resume_trade_number is not None and checkpoint_pages > 0)
 
         task.status = TaskStatus.RUNNING
-        task.attempts += 1
+        if not continuing_task:
+            task.attempts += 1
+        elif task.attempts <= 0:
+            task.attempts = 1
         task.current_page = 0
         task.end_reason = None
         task.error = None
@@ -1173,14 +1119,12 @@ class JobManager:
         task.blocked_reason = None
         self._assign_worker(job, worker_id, task)
         self._save_task_row(job, task)
-        self._maybe_stagger_same_ticker_start(job, task, worker_id)
 
-        if not resuming:
+        if not continuing_task:
             self._clear_task_checkpoint(task)
             self.storage.reset_task_stage(job.job_id, task.ticker, task.date)
             checkpoint_records = 0
             checkpoint_pages = 0
-            expected_page1_fingerprint = None
 
         def update_progress(page: int, total_records: int):
             task.current_page = page
@@ -1203,8 +1147,6 @@ class JobManager:
             task.records_fetched = task.checkpoint_records_fetched
             task.pages_fetched = task.checkpoint_pages_fetched
             self._save_task_row(job, task)
-            if task.checkpoint_pages_fetched == 1 and task.page1_fingerprint:
-                self._register_active_page1_fingerprint(job, task, worker_id, task.page1_fingerprint)
 
         try:
             result = self.client.fetch_running_trade(
@@ -1214,28 +1156,13 @@ class JobManager:
                 progress_callback=update_progress,
                 cancel_check=lambda: (
                     job.status != JobStatus.RUNNING
-                    or self._has_task_contamination_flag(job.job_id, task.ticker, task.date)
+                    or self._current_rate_limit_pause_until(job) is not None
                 ),
                 resume_trade_number=resume_trade_number if resuming else None,
                 initial_records=checkpoint_records if resuming else 0,
                 initial_pages=checkpoint_pages if resuming else 0,
                 page_callback=persist_page,
             )
-
-            contamination_message = self._pop_task_contamination_flag(job.job_id, task.ticker, task.date)
-            if contamination_message:
-                self._reset_task_progress(job, task)
-                self._mark_task_deferred(
-                    job,
-                    task,
-                    delay_seconds=_CONTAMINATION_RETRY_SECONDS,
-                    reason=DEFER_REASON_SAME_TICKER_CROSS_DATE_CONTAMINATION,
-                    error_message=(
-                        f"{contamination_message} — retrying in "
-                        f"{_CONTAMINATION_RETRY_SECONDS:.0f}s..."
-                    ),
-                )
-                return
 
             if result.get('cancelled'):
                 if job.status == JobStatus.PAUSED:
@@ -1244,6 +1171,17 @@ class JobManager:
                         task,
                         reason=BLOCKED_REASON_MANUAL_PAUSE,
                         error_message='Paused by user',
+                    )
+                elif self._current_rate_limit_pause_until(job):
+                    pause_until = self._current_rate_limit_pause_until(job)
+                    remaining = 0.0
+                    if pause_until:
+                        remaining = max(0.0, (pause_until - now_wib()).total_seconds())
+                    self._park_task_for_rate_limit(
+                        job,
+                        task,
+                        max(RATE_LIMIT_MIN_SECONDS, remaining or RATE_LIMIT_FALLBACK_SECONDS),
+                        count_rate_limit=False,
                     )
                 else:
                     task.status = TaskStatus.PENDING
@@ -1282,21 +1220,6 @@ class JobManager:
                     self._schedule_task_retry_backoff(job, task, reason=DEFER_REASON_CURSOR_REGRESSION)
                     return
 
-                result_page1_fingerprint = result.get('page1_fingerprint')
-                if (
-                    expected_page1_fingerprint
-                    and result_page1_fingerprint
-                    and resume_trade_number is None
-                    and result_page1_fingerprint != expected_page1_fingerprint
-                ):
-                    task.error = (
-                        f"Refusing to complete unstable page-1 result for {task.ticker} {task.date}: "
-                        f"{result_page1_fingerprint} != {expected_page1_fingerprint}"
-                    )
-                    task.last_error_at = now_wib().isoformat()
-                    self._schedule_task_retry_backoff(job, task, reason=DEFER_REASON_PAGE1_FINGERPRINT_MISMATCH)
-                    return
-
                 filename = self.storage.get_filename(task.ticker, job.from_date, job.until_date)
                 save_result = self.storage.finalize_task_trades(
                     job.job_id,
@@ -1326,29 +1249,16 @@ class JobManager:
             error = result.get('error', 'Unknown error')
 
             if result.get('rate_limited'):
-                raw_wait = result.get('retry_after_seconds')
-                try:
-                    wait_secs = max(RATE_LIMIT_MIN_SECONDS, min(float(raw_wait), RATE_LIMIT_MAX_SECONDS))
-                except (TypeError, ValueError):
-                    wait_secs = float(RATE_LIMIT_FALLBACK_SECONDS)
-                if task.attempts > 0:
-                    task.attempts -= 1
-                self._mark_task_deferred(
-                    job,
-                    task,
-                    delay_seconds=wait_secs,
-                    reason=DEFER_REASON_RATE_LIMIT,
-                    error_message=f"Rate limited — retrying in {wait_secs:.0f}s...",
-                    count_rate_limit=True,
-                )
+                self._apply_checkpoint_from_result(task, result)
+                wait_secs = self._scaled_rate_limit_wait(task, result.get('retry_after_seconds'))
                 self._activate_rate_limit_pause(job, wait_secs)
+                self._park_task_for_rate_limit(job, task, wait_secs, count_rate_limit=True)
                 logger.warning(
-                    "Task %s %s rate-limited (HTTP 429) — retry in ~%.0fs (job %s, pause_on_rate_limit=%s)",
+                    "Task %s %s rate-limited (HTTP 429) — pausing job for ~%.0fs (job %s)",
                     task.ticker,
                     task.date,
                     wait_secs,
                     job.job_id,
-                    job.pause_on_rate_limit,
                 )
                 return
 
@@ -1393,5 +1303,4 @@ class JobManager:
             self._schedule_task_retry_backoff(job, task)
         finally:
             task.active_worker_id = None
-            self._clear_active_page1_fingerprint(job.job_id, task.ticker, task.date)
             self._release_worker(job, worker_id)
