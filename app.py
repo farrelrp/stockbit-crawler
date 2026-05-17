@@ -316,9 +316,8 @@ def api_job_defaults_set():
     """Persist shared job defaults."""
     data = request.get_json() or {}
     delay = float(data.get('delay', DEFAULT_DELAY_SECONDS))
-    limit = int(data.get('limit', DEFAULT_LIMIT))
     pause_on_rate_limit = _as_bool(data.get('pause_on_rate_limit', DEFAULT_PAUSE_ON_RATE_LIMIT))
-    result = settings_store.set_job_defaults(delay, limit, pause_on_rate_limit)
+    result = settings_store.set_job_defaults(delay, DEFAULT_LIMIT, pause_on_rate_limit)
     status = 200 if result.get('success') else 500
     if result.get('success'):
         return jsonify({'success': True, 'defaults': settings_store.get_job_defaults()}), status
@@ -535,7 +534,7 @@ def api_job_create():
     from_date = data.get('from_date')
     until_date = data.get('until_date')
     delay_seconds = float(data.get('delay_seconds', DEFAULT_DELAY_SECONDS))
-    limit = int(data.get('limit', DEFAULT_LIMIT))
+    limit = DEFAULT_LIMIT
     parallel_workers = int(data.get('parallel_workers', 1))
     max_backoff_seconds = float(data.get('max_backoff_seconds', 180))
     pause_on_rate_limit = _as_bool(

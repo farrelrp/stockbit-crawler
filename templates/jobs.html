@@ -218,12 +218,6 @@
                     <small>Delay after each completed task (0 = no delay)</small>
                 </div>
                 
-                <div class="form-group">
-                    <label for="limit">Records Per Page</label>
-                    <input type="number" id="limit" name="limit" value="50" 
-                           min="10" max="200" step="10" class="form-control">
-                    <small>How many trades per API request (max 200)</small>
-                </div>
             </div>
             
             <div class="form-row">
@@ -462,7 +456,6 @@ function loadDefaults() {
         .then(r => r.json())
         .then(defaults => {
             document.getElementById('delay').value = defaults.delay || '3';
-            document.getElementById('limit').value = defaults.limit || '50';
             document.getElementById('pause-on-rate-limit').checked = !!defaults.pause_on_rate_limit;
         })
         .catch(err => {
@@ -479,7 +472,6 @@ document.getElementById('create-job-form').addEventListener('submit', function(e
         from_date: document.getElementById('from-date').value,
         until_date: document.getElementById('until-date').value,
         delay_seconds: document.getElementById('delay').value,
-        limit: document.getElementById('limit').value,
         parallel_workers: document.getElementById('parallel-workers').value,
         max_backoff_seconds: document.getElementById('max-backoff').value,
         pause_on_rate_limit: document.getElementById('pause-on-rate-limit').checked

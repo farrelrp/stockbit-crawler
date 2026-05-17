@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+from config import DEFAULT_LIMIT
 from tz import now_wib
 
 logger = logging.getLogger(__name__)
@@ -347,7 +348,7 @@ class TelegramBot:
             "/upload 2026-02-04 - Upload specific date\n\n"
             "*Historical Trade Jobs*\n"
             "/jobs - List recent jobs\n"
-            "/newjob BBCA,TLKM 2026-01-01 2026-01-31 [delay] [limit] [max_backoff_sec] - Create job\n"
+            f"/newjob BBCA,TLKM 2026-01-01 2026-01-31 [delay] [max_backoff_sec] - Create job (fixed {DEFAULT_LIMIT} rows/page)\n"
             "/jobstatus <id> - Job details\n"
             "/pausejob <id> - Pause a job\n"
             "/resumejob <id> - Resume a job\n"
@@ -601,7 +602,7 @@ class TelegramBot:
     async def _cmd_new_job(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Create a historical trade job.
 
-        Usage: /newjob BBCA,TLKM 2026-01-01 2026-01-31 [delay] [limit]
+        Usage: /newjob BBCA,TLKM 2026-01-01 2026-01-31 [delay] [max_backoff_sec]
         """
         if not self.job_manager:
             await update.message.reply_text("Job manager not available.")
@@ -610,9 +611,10 @@ class TelegramBot:
         if len(context.args) < 3:
             await update.message.reply_text(
                 "*Create Historical Trade Job*\n\n"
-                "Usage: `/newjob TICKERS FROM TO [delay] [limit] [max_backoff_sec]`\n\n"
+                f"Usage: `/newjob TICKERS FROM TO [delay] [max_backoff_sec]`\n\n"
                 "Example:\n`/newjob BBCA,TLKM 2026-01-01 2026-01-31`\n"
-                "`/newjob BBRI 2026-02-01 2026-02-15 2 100 180`",
+                "`/newjob BBRI 2026-02-01 2026-02-15 2 180`\n\n"
+                f"Running-trade jobs always use the maximum page size: {DEFAULT_LIMIT} records.",
                 parse_mode="Markdown"
             )
             return
@@ -621,8 +623,10 @@ class TelegramBot:
         from_date = context.args[1]
         until_date = context.args[2]
         delay = float(context.args[3]) if len(context.args) > 3 else 3.0
-        limit = int(context.args[4]) if len(context.args) > 4 else 50
-        max_backoff = float(context.args[5]) if len(context.args) > 5 else 180.0
+        if len(context.args) > 5:
+            max_backoff = float(context.args[5])
+        else:
+            max_backoff = float(context.args[4]) if len(context.args) > 4 else 180.0
 
         try:
             datetime.strptime(from_date, '%Y-%m-%d')
@@ -636,7 +640,7 @@ class TelegramBot:
             from_date=from_date,
             until_date=until_date,
             delay_seconds=delay,
-            limit=limit,
+            limit=DEFAULT_LIMIT,
             max_backoff_seconds=max_backoff,
         )
 
@@ -649,7 +653,7 @@ class TelegramBot:
             f"Tickers: {', '.join(tickers)}\n"
             f"Range: {from_date} to {until_date}\n"
             f"Tasks: {total_tasks}\n"
-            f"Delay: {delay}s | Limit: {limit}",
+            f"Delay: {delay}s | Limit: {DEFAULT_LIMIT}",
             parse_mode="Markdown"
         )
 

@@ -10,6 +10,7 @@ from jobs import (
     JobStatus,
     TaskStatus,
     DEFER_REASON_RATE_LIMIT,
+    DEFER_REASON_SAME_TICKER_CROSS_DATE_CONTAMINATION,
 )
 from database import JobDatabase
 
@@ -134,14 +135,14 @@ class TestJobManager429(JobManagerBase):
         tasks = jm._dispatchable_tasks(job, {}, 1)
         self.assertEqual([t.date for t in tasks], ["2024-01-02"])
 
-    def test_same_ticker_inflight_blocks_parallel_dispatch(self):
+    def test_same_ticker_inflight_can_dispatch_in_parallel_by_default(self):
         jm = self.make_manager()
         running = Task(ticker="A", date="2024-01-01", status=TaskStatus.RUNNING)
         pending = Task(ticker="A", date="2024-01-02")
         job = self.make_job(tasks=[running, pending])
         inflight = {object(): running}
         tasks = jm._dispatchable_tasks(job, inflight, 1)
-        self.assertEqual(tasks, [])
+        self.assertEqual([t.date for t in tasks], ["2024-01-02"])
 
     def test_different_tickers_can_dispatch_in_parallel(self):
         jm = self.make_manager()
@@ -150,6 +151,33 @@ class TestJobManager429(JobManagerBase):
         job = self.make_job(tickers=["A", "B"], tasks=[first, second])
         tasks = jm._dispatchable_tasks(job, {}, 2)
         self.assertEqual([(t.ticker, t.date) for t in tasks], [("A", "2024-01-01"), ("B", "2024-01-01")])
+
+    def test_quarantined_ticker_serializes_same_ticker_dispatch(self):
+        jm = self.make_manager()
+        jm._quarantine_ticker("A", seconds=600)
+        running = Task(ticker="A", date="2024-01-01", status=TaskStatus.RUNNING)
+        pending_same = Task(ticker="A", date="2024-01-02")
+        pending_other = Task(ticker="B", date="2024-01-01")
+        job = self.make_job(tickers=["A", "B"], tasks=[running, pending_same, pending_other])
+        inflight = {object(): running}
+        tasks = jm._dispatchable_tasks(job, inflight, 2)
+        self.assertEqual([(t.ticker, t.date) for t in tasks], [("B", "2024-01-01")])
+
+    def test_page1_collision_flags_both_tasks_and_quarantines_ticker(self):
+        jm = self.make_manager()
+        job = self.make_job(
+            tickers=["A"],
+            tasks=[
+                Task(ticker="A", date="2024-01-01"),
+                Task(ticker="A", date="2024-01-02"),
+            ],
+        )
+        first, second = job.tasks
+        jm._register_active_page1_fingerprint(job, first, "worker-1", "fp-1")
+        jm._register_active_page1_fingerprint(job, second, "worker-2", "fp-1")
+        self.assertTrue(jm._is_ticker_quarantined("A"))
+        self.assertIsNotNone(jm._pop_task_contamination_flag(job.job_id, "A", "2024-01-01"))
+        self.assertIsNotNone(jm._pop_task_contamination_flag(job.job_id, "A", "2024-01-02"))
 
     def test_pause_on_rate_limit_blocks_new_dispatch_during_cooldown(self):
         jm = self.make_manager()
@@ -348,3 +376,37 @@ class TestJobManager429(JobManagerBase):
         self.assertEqual(job.tasks[0].status, TaskStatus.DEFERRED)
         self.assertIn("checkpoint 2100", job.tasks[0].error)
         self.assertEqual(job.tasks[0].defer_reason, "cursor_regression")
+
+    def test_contaminated_same_ticker_result_is_deferred(self):
+        jm = self.make_manager()
+
+        def fake_fetch_running_trade(**kwargs):
+            kwargs["page_callback"](
+                [{"trade_number": 200, "time": "15:00:00"}],
+                {
+                    "resume_trade_number": 200,
+                    "checkpoint_pages_fetched": 1,
+                    "checkpoint_records_fetched": 1,
+                    "checkpoint_first_trade_number": 200,
+                    "checkpoint_last_trade_number": 200,
+                    "checkpoint_first_time": "15:00:00",
+                    "checkpoint_last_time": "15:00:00",
+                    "page1_fingerprint": "fp-1",
+                },
+            )
+            return {
+                "success": False,
+                "cancelled": True,
+                "error": "Cancelled",
+            }
+
+        jm.client.fetch_running_trade.side_effect = fake_fetch_running_trade
+        task = Task(ticker="A", date="2024-01-02")
+        job = self.make_job(tasks=[task])
+        jm._task_contamination_flags[(job.job_id, "A", "2024-01-02")] = "Same ticker contamination detected for A"
+        jm._process_task(job, job.tasks[0], "worker-1")
+        self.assertEqual(job.tasks[0].status, TaskStatus.DEFERRED)
+        self.assertEqual(
+            job.tasks[0].defer_reason,
+            DEFER_REASON_SAME_TICKER_CROSS_DATE_CONTAMINATION,
+        )

@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import app as app_module
 from auto_auth import AutoAuth
+from config import DEFAULT_LIMIT
 
 
 class TestJobsApi(unittest.TestCase):
@@ -39,14 +40,15 @@ class TestJobsApi(unittest.TestCase):
         self.assertEqual(response.get_json(), {'success': True})
 
     def test_job_defaults_round_trip(self):
-        defaults = {'delay': 5, 'limit': 60, 'pause_on_rate_limit': True}
-        with patch.object(app_module.settings_store, 'set_job_defaults', return_value={'success': True}), \
+        defaults = {'delay': 5, 'limit': DEFAULT_LIMIT, 'pause_on_rate_limit': True}
+        with patch.object(app_module.settings_store, 'set_job_defaults', return_value={'success': True}) as set_defaults, \
              patch.object(app_module.settings_store, 'get_job_defaults', return_value=defaults):
             response = self.client.post('/api/settings/job-defaults', json=defaults)
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertTrue(payload['success'])
         self.assertTrue(payload['defaults']['pause_on_rate_limit'])
+        set_defaults.assert_called_once_with(5.0, DEFAULT_LIMIT, True)
 
 
 class TestAutoAuthResume(unittest.TestCase):

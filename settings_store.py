@@ -37,7 +37,7 @@ class SettingsStore:
         legacy_policy = saved.get('job_defaults', {}).get('rate_limit_policy')
         defaults.update({
             'delay': saved.get('job_defaults', {}).get('delay', defaults['delay']),
-            'limit': saved.get('job_defaults', {}).get('limit', defaults['limit']),
+            'limit': DEFAULT_LIMIT,
             'pause_on_rate_limit': bool(saved.get('job_defaults', {}).get(
                 'pause_on_rate_limit',
                 legacy_policy == 'strict_fifo' if legacy_policy is not None else defaults['pause_on_rate_limit'],
@@ -49,7 +49,7 @@ class SettingsStore:
         payload = {
             'job_defaults': {
                 'delay': delay,
-                'limit': limit,
+                'limit': DEFAULT_LIMIT,
                 'pause_on_rate_limit': bool(pause_on_rate_limit),
             }
         }
