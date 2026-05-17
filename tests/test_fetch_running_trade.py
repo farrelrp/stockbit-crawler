@@ -107,3 +107,70 @@ class TestFetchRunningTrade(unittest.TestCase):
         self.assertTrue(r.get("success"))
         self.assertEqual(r.get("end_reason"), FetchEndReason.OK_EMPTY_PAGE)
         self.assertIn(r.get("end_reason"), NORMAL_FETCH_END_REASONS)
+
+    def test_resume_from_checkpoint_after_rate_limit(self):
+        calls = []
+        phase = {"resume": False}
+
+        def fake_fetch(ticker, date, limit, trade_number, retry_count=3):
+            calls.append(trade_number)
+            if trade_number is None:
+                return {
+                    "success": True,
+                    "data": [{"trade_number": n, "time": "15:00:00"} for n in range(200, 150, -1)],
+                    "count": 50,
+                }
+            if trade_number == 151:
+                if phase["resume"]:
+                    return {
+                        "success": True,
+                        "data": [{"trade_number": n, "time": "14:00:00"} for n in range(150, 100, -1)],
+                        "count": 50,
+                    }
+                return {
+                    "success": False,
+                    "error": "Rate limited (429)",
+                    "rate_limited": True,
+                    "retry_after_seconds": 10.0,
+                    "status_code": 429,
+                }
+            if trade_number == 101:
+                return {"success": True, "data": [], "count": 0}
+            raise AssertionError(f"unexpected trade_number={trade_number!r}")
+
+        page_checkpoints = []
+
+        def first_attempt_callback(trades, checkpoint):
+            page_checkpoints.append(checkpoint)
+
+        self.client._fetch_page = fake_fetch
+        first = self.client.fetch_running_trade(
+            "BBCA",
+            "2024-01-02",
+            limit=50,
+            retry_count=1,
+            cancel_check=None,
+            page_callback=first_attempt_callback,
+        )
+        self.assertFalse(first.get("success"))
+        self.assertTrue(first.get("rate_limited"))
+        self.assertEqual(first.get("count"), 50)
+        self.assertEqual(first.get("resume_trade_number"), 151)
+        self.assertEqual(first.get("checkpoint_pages_fetched"), 1)
+
+        calls.clear()
+        phase["resume"] = True
+        resumed = self.client.fetch_running_trade(
+            "BBCA",
+            "2024-01-02",
+            limit=50,
+            retry_count=1,
+            cancel_check=None,
+            resume_trade_number=151,
+            initial_records=50,
+            initial_pages=1,
+        )
+        self.assertTrue(resumed.get("success"))
+        self.assertEqual(calls[0], 151)
+        self.assertEqual(resumed.get("count"), 100)
+        self.assertEqual(resumed.get("pages_fetched"), 2)

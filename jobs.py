@@ -31,6 +31,8 @@ DEFER_REASON_MANUAL_DELAY = 'manual_delay'
 BLOCKED_REASON_TOKEN_REFRESH = 'token_refresh'
 BLOCKED_REASON_CAPTCHA_REQUIRED = 'captcha_required'
 BLOCKED_REASON_MANUAL_PAUSE = 'manual_pause'
+DEFER_REASON_CURSOR_REGRESSION = 'cursor_regression'
+DEFER_REASON_PAGE1_FINGERPRINT_MISMATCH = 'page1_fingerprint_mismatch'
 
 _MIN_BACKOFF_CAP = 5.0
 _MAX_BACKOFF_CAP = 24 * 3600.0
@@ -104,6 +106,14 @@ class Task:
     last_error_at: Optional[str] = None
     updated_at: Optional[str] = None
     active_worker_id: Optional[str] = None
+    resume_trade_number: Optional[int] = None
+    checkpoint_pages_fetched: int = 0
+    checkpoint_records_fetched: int = 0
+    checkpoint_first_trade_number: Optional[int] = None
+    checkpoint_last_trade_number: Optional[int] = None
+    checkpoint_first_time: Optional[str] = None
+    checkpoint_last_time: Optional[str] = None
+    page1_fingerprint: Optional[str] = None
 
 
 @dataclass
@@ -286,6 +296,14 @@ class JobManager:
                         task.last_error_at = row.get('last_error_at')
                         task.updated_at = row.get('updated_at')
                         task.active_worker_id = None
+                        task.resume_trade_number = row.get('resume_trade_number')
+                        task.checkpoint_pages_fetched = row.get('checkpoint_pages_fetched') or 0
+                        task.checkpoint_records_fetched = row.get('checkpoint_records_fetched') or 0
+                        task.checkpoint_first_trade_number = row.get('checkpoint_first_trade_number')
+                        task.checkpoint_last_trade_number = row.get('checkpoint_last_trade_number')
+                        task.checkpoint_first_time = row.get('checkpoint_first_time')
+                        task.checkpoint_last_time = row.get('checkpoint_last_time')
+                        task.page1_fingerprint = row.get('page1_fingerprint')
 
                 for task in job.tasks:
                     skip_reason = _get_skip_reason(task.date)
@@ -383,6 +401,14 @@ class JobManager:
             'last_error_at': task.last_error_at,
             'updated_at': task.updated_at,
             'active_worker_id': task.active_worker_id,
+            'resume_trade_number': task.resume_trade_number,
+            'checkpoint_pages_fetched': task.checkpoint_pages_fetched,
+            'checkpoint_records_fetched': task.checkpoint_records_fetched,
+            'checkpoint_first_trade_number': task.checkpoint_first_trade_number,
+            'checkpoint_last_trade_number': task.checkpoint_last_trade_number,
+            'checkpoint_first_time': task.checkpoint_first_time,
+            'checkpoint_last_time': task.checkpoint_last_time,
+            'page1_fingerprint': task.page1_fingerprint,
         })
 
     def _infer_defer_reason(self, error: Optional[str]) -> Optional[str]:
@@ -391,6 +417,10 @@ class JobManager:
         lower = error.lower()
         if 'rate limit' in lower or '429' in lower:
             return DEFER_REASON_RATE_LIMIT
+        if 'page-1' in lower or 'fingerprint' in lower:
+            return DEFER_REASON_PAGE1_FINGERPRINT_MISMATCH
+        if 'regressed' in lower or 'checkpoint' in lower:
+            return DEFER_REASON_CURSOR_REGRESSION
         return DEFER_REASON_ERROR_BACKOFF
 
     def _mark_task_pending(self, job: Job, task: Task) -> None:
@@ -401,6 +431,25 @@ class JobManager:
         task.current_page = 0
         task.active_worker_id = None
         self._save_task_row(job, task)
+
+    @staticmethod
+    def _clear_task_checkpoint(task: Task) -> None:
+        task.resume_trade_number = None
+        task.checkpoint_pages_fetched = 0
+        task.checkpoint_records_fetched = 0
+        task.checkpoint_first_trade_number = None
+        task.checkpoint_last_trade_number = None
+        task.checkpoint_first_time = None
+        task.checkpoint_last_time = None
+        task.page1_fingerprint = None
+
+    def _reset_task_progress(self, job: Job, task: Task) -> None:
+        task.records_fetched = 0
+        task.pages_fetched = 0
+        task.current_page = 0
+        task.end_reason = None
+        self._clear_task_checkpoint(task)
+        self.storage.discard_task_stage(job.job_id, task.ticker, task.date)
 
     def _mark_task_deferred(
         self,
@@ -499,6 +548,7 @@ class JobManager:
 
         chosen: List[Task] = []
         inflight_tasks = list(inflight.values())
+        busy_tickers = {task.ticker for task in inflight_tasks}
         for task in job.tasks:
             if len(chosen) >= capacity:
                 break
@@ -506,7 +556,10 @@ class JobManager:
                 continue
             if task in inflight_tasks or task in chosen:
                 continue
+            if task.ticker in busy_tickers:
+                continue
             chosen.append(task)
+            busy_tickers.add(task.ticker)
         return chosen
 
     def _maybe_fire_progress_milestones(self, job: Job) -> None:
@@ -660,11 +713,9 @@ class JobManager:
             return False
         for task in job.tasks:
             if task.status in (TaskStatus.FAILED, TaskStatus.DEFERRED, TaskStatus.BLOCKED):
-                self._mark_task_pending(job, task)
+                self._reset_task_progress(job, task)
                 task.error = None
-                task.records_fetched = 0
-                task.pages_fetched = 0
-                task.end_reason = None
+                self._mark_task_pending(job, task)
         job.status = JobStatus.QUEUED
         job.error = None
         job.completed_at = None
@@ -695,11 +746,8 @@ class JobManager:
         if not task:
             return False
         if action == 'retry_now':
+            self._reset_task_progress(job, task)
             task.error = None
-            task.current_page = 0
-            task.records_fetched = 0
-            task.pages_fetched = 0
-            task.end_reason = None
             self._mark_task_pending(job, task)
         elif action == 'retry_after':
             if delay_seconds is None:
@@ -712,13 +760,13 @@ class JobManager:
                 error_message=f"Manual retry scheduled in {float(delay_seconds):.0f}s...",
             )
         elif action == 'skip':
+            self._reset_task_progress(job, task)
             task.status = TaskStatus.SKIPPED
             task.skip_reason = 'User skipped'
             task.blocked_reason = None
             task.defer_reason = None
             task.retry_after_at = None
             task.active_worker_id = None
-            task.current_page = 0
             self._save_task_row(job, task)
         else:
             return False
@@ -833,7 +881,13 @@ class JobManager:
             except Exception as e:
                 logger.error("Auto-refresh callback failed: %s", e, exc_info=True)
 
-    def _schedule_task_retry_backoff(self, job: Job, task: Task) -> None:
+    def _schedule_task_retry_backoff(
+        self,
+        job: Job,
+        task: Task,
+        *,
+        reason: str = DEFER_REASON_ERROR_BACKOFF,
+    ) -> None:
         extra_delay = max(0, task.attempts - 3) * 30
         raw = 2.0 * task.attempts + extra_delay
         backoff = min(raw, float(job.max_backoff_seconds))
@@ -843,7 +897,7 @@ class JobManager:
             job,
             task,
             delay_seconds=backoff,
-            reason=DEFER_REASON_ERROR_BACKOFF,
+            reason=reason,
             error_message=message,
         )
         logger.info(
@@ -1001,6 +1055,12 @@ class JobManager:
         if self._is_job_cancelled(job):
             return
 
+        resume_trade_number = task.resume_trade_number
+        checkpoint_records = task.checkpoint_records_fetched
+        checkpoint_pages = task.checkpoint_pages_fetched
+        expected_page1_fingerprint = task.page1_fingerprint
+        resuming = bool(resume_trade_number is not None and checkpoint_pages > 0)
+
         task.status = TaskStatus.RUNNING
         task.attempts += 1
         task.current_page = 0
@@ -1012,10 +1072,34 @@ class JobManager:
         self._assign_worker(job, worker_id, task)
         self._save_task_row(job, task)
 
+        if not resuming:
+            self._clear_task_checkpoint(task)
+            self.storage.reset_task_stage(job.job_id, task.ticker, task.date)
+            checkpoint_records = 0
+            checkpoint_pages = 0
+            expected_page1_fingerprint = None
+
         def update_progress(page: int, total_records: int):
             task.current_page = page
             task.records_fetched = total_records
             self._touch_worker_page(job, worker_id, page, task)
+
+        def persist_page(trades: List[Dict[str, Any]], checkpoint: Dict[str, Any]):
+            save_result = self.storage.append_task_trades(job.job_id, task.ticker, task.date, trades)
+            if not save_result.get('success'):
+                raise RuntimeError(save_result.get('error', 'Failed to persist checkpoint page'))
+            task.resume_trade_number = checkpoint.get('resume_trade_number')
+            task.checkpoint_pages_fetched = checkpoint.get('checkpoint_pages_fetched', 0) or 0
+            task.checkpoint_records_fetched = checkpoint.get('checkpoint_records_fetched', 0) or 0
+            task.checkpoint_first_trade_number = checkpoint.get('checkpoint_first_trade_number')
+            task.checkpoint_last_trade_number = checkpoint.get('checkpoint_last_trade_number')
+            task.checkpoint_first_time = checkpoint.get('checkpoint_first_time')
+            task.checkpoint_last_time = checkpoint.get('checkpoint_last_time')
+            if checkpoint.get('page1_fingerprint'):
+                task.page1_fingerprint = checkpoint.get('page1_fingerprint')
+            task.records_fetched = task.checkpoint_records_fetched
+            task.pages_fetched = task.checkpoint_pages_fetched
+            self._save_task_row(job, task)
 
         try:
             result = self.client.fetch_running_trade(
@@ -1024,6 +1108,10 @@ class JobManager:
                 limit=job.limit,
                 progress_callback=update_progress,
                 cancel_check=lambda: job.status != JobStatus.RUNNING,
+                resume_trade_number=resume_trade_number if resuming else None,
+                initial_records=checkpoint_records if resuming else 0,
+                initial_pages=checkpoint_pages if resuming else 0,
+                page_callback=persist_page,
             )
 
             if result.get('cancelled'):
@@ -1052,22 +1140,56 @@ class JobManager:
                     self._schedule_task_retry_backoff(job, task)
                     return
 
-                trades = result.get('data', [])
+                if checkpoint_records and result.get('count', 0) < checkpoint_records:
+                    task.error = (
+                        f"Refusing to complete regressed result for {task.ticker} {task.date}: "
+                        f"{result.get('count', 0)} row(s) < checkpoint {checkpoint_records}"
+                    )
+                    task.last_error_at = now_wib().isoformat()
+                    self._schedule_task_retry_backoff(job, task, reason=DEFER_REASON_CURSOR_REGRESSION)
+                    return
+
+                if checkpoint_pages and result.get('successful_pages_fetched', result.get('pages_fetched', 0)) < checkpoint_pages:
+                    task.error = (
+                        f"Refusing to complete regressed pagination for {task.ticker} {task.date}: "
+                        f"{result.get('successful_pages_fetched', result.get('pages_fetched', 0))} page(s) "
+                        f"< checkpoint {checkpoint_pages}"
+                    )
+                    task.last_error_at = now_wib().isoformat()
+                    self._schedule_task_retry_backoff(job, task, reason=DEFER_REASON_CURSOR_REGRESSION)
+                    return
+
+                result_page1_fingerprint = result.get('page1_fingerprint')
+                if (
+                    expected_page1_fingerprint
+                    and result_page1_fingerprint
+                    and resume_trade_number is None
+                    and result_page1_fingerprint != expected_page1_fingerprint
+                ):
+                    task.error = (
+                        f"Refusing to complete unstable page-1 result for {task.ticker} {task.date}: "
+                        f"{result_page1_fingerprint} != {expected_page1_fingerprint}"
+                    )
+                    task.last_error_at = now_wib().isoformat()
+                    self._schedule_task_retry_backoff(job, task, reason=DEFER_REASON_PAGE1_FINGERPRINT_MISMATCH)
+                    return
+
                 filename = self.storage.get_filename(task.ticker, job.from_date, job.until_date)
-                save_result = self.storage.save_trades(
-                    ticker=task.ticker,
-                    date=task.date,
-                    trades=trades,
-                    filename=filename,
+                save_result = self.storage.finalize_task_trades(
+                    job.job_id,
+                    task.ticker,
+                    task.date,
+                    filename,
                 )
                 if save_result.get('success'):
                     task.status = TaskStatus.COMPLETED
                     task.records_fetched = result.get('count', 0)
-                    task.pages_fetched = result.get('pages_fetched', 1)
+                    task.pages_fetched = result.get('successful_pages_fetched', result.get('pages_fetched', 0))
                     task.end_reason = end_reason
                     task.error = None
                     task.current_page = 0
                     task.active_worker_id = None
+                    self._clear_task_checkpoint(task)
                     self._save_task_row(job, task)
                     if job.get_progress()['completed'] % 5 == 0:
                         self._persist_job(job)

@@ -24,14 +24,11 @@ class FetchEndReason:
     OK_SHORT_PAGE = "ok_short_page"
     OK_BEFORE_MARKET_OPEN = "ok_before_market_open"
     OK_NO_TRADE_NUMBER = "ok_no_trade_number"
-    # network/auth error after at least one good page — must NOT be saved as a complete day
     FETCH_INTERRUPTED = "fetch_interrupted"
     CANCELLED_PARTIAL = "cancelled_partial"
-    # hit rate limit mid-run — jobs layer gates that task, not burn retries
     RATE_LIMITED = "rate_limited"
 
 
-# normal terminal reasons: day fetch reached a defined end, not an error
 NORMAL_FETCH_END_REASONS = frozenset(
     {
         FetchEndReason.OK_EMPTY_PAGE,
@@ -69,12 +66,27 @@ def parse_retry_after_header(value: Optional[str], fallback: float) -> float:
     return float(fallback)
 
 
+def build_page_fingerprint(trades: List[Dict[str, Any]]) -> Optional[str]:
+    """Fingerprint page 1 so retries can detect unstable top-page payloads."""
+    if not trades:
+        return None
+    first = trades[0]
+    last = trades[-1]
+    return "|".join([
+        str(len(trades)),
+        str(first.get('trade_number', '')),
+        str(first.get('time', '')),
+        str(last.get('trade_number', '')),
+        str(last.get('time', '')),
+    ])
+
+
 class StockbitClient:
     """Client for Stockbit Running Trade API"""
-    
+
     def __init__(self, token_manager):
         self.token_manager = token_manager
-    
+
     def _fetch_page(
         self,
         ticker: str,
@@ -85,18 +97,7 @@ class StockbitClient:
     ) -> Dict[str, Any]:
         """
         Fetch a single page of running trade data
-        
-        Args:
-            ticker: Stock symbol (e.g., 'BIRD')
-            date: Date in YYYY-MM-DD format
-            limit: Max records to fetch per page
-            trade_number: For pagination - get trades before this trade_number
-            retry_count: Number of retry attempts
-        
-        Returns:
-            Dict with success status, data, and error info
         """
-        # get valid token
         token = self.token_manager.get_valid_token()
         if not token:
             return {
@@ -104,8 +105,7 @@ class StockbitClient:
                 'error': 'No valid token available. Please set your Bearer token.',
                 'requires_login': True
             }
-        
-        # build query params
+
         params = {
             'sort': 'DESC',
             'limit': limit,
@@ -113,16 +113,12 @@ class StockbitClient:
             'symbols[]': ticker,
             'date': date
         }
-        
-        # add trade_number for pagination if provided
         if trade_number is not None:
             params['trade_number'] = trade_number
-        
-        # build headers with auth
+
         headers = HEADERS_TEMPLATE.copy()
         headers['Authorization'] = f'Bearer {token}'
-        
-        # attempt request with retries
+
         for attempt in range(retry_count):
             try:
                 response = requests.get(
@@ -131,8 +127,7 @@ class StockbitClient:
                     headers=headers,
                     timeout=30
                 )
-                
-                # handle unauthorized - token expired or invalid
+
                 if response.status_code == 401:
                     self.token_manager.mark_token_invalid()
                     return {
@@ -141,8 +136,7 @@ class StockbitClient:
                         'status_code': 401,
                         'requires_login': True
                     }
-                
-                # handle forbidden - might be captcha or other issue
+
                 if response.status_code == 403:
                     return {
                         'success': False,
@@ -151,7 +145,6 @@ class StockbitClient:
                         'requires_login': True
                     }
 
-                # rate limit — let the job manager backoff; don't lump with generic 4xx
                 if response.status_code == 429:
                     retry_after = parse_retry_after_header(
                         response.headers.get('Retry-After'),
@@ -165,17 +158,15 @@ class StockbitClient:
                         'retry_after_seconds': retry_after,
                         'response_text': response.text[:500],
                     }
-                
-                # handle other 4xx errors (don't retry)
+
                 if 400 <= response.status_code < 500:
                     return {
                         'success': False,
                         'error': f'Client error: {response.status_code}',
                         'status_code': response.status_code,
-                        'response_text': response.text[:500]  # first 500 chars for debugging
+                        'response_text': response.text[:500]
                     }
-                
-                # handle 5xx errors (retry with backoff)
+
                 if response.status_code >= 500:
                     if attempt < retry_count - 1:
                         wait_time = DEFAULT_RETRY_BACKOFF ** attempt
@@ -186,21 +177,18 @@ class StockbitClient:
                         'error': f'Server error after {retry_count} attempts',
                         'status_code': response.status_code
                     }
-                
-                # success
+
                 response.raise_for_status()
                 data = response.json()
-                
-                # extract running_trade list
+
                 running_trade = []
                 if 'data' in data and isinstance(data['data'], dict):
                     running_trade = data['data'].get('running_trade', [])
                     is_open_market = data['data'].get('is_open_market', False)
                 else:
-                    # fallback if structure is different
                     running_trade = data.get('running_trade', [])
                     is_open_market = data.get('is_open_market', False)
-                
+
                 return {
                     'success': True,
                     'data': running_trade,
@@ -209,7 +197,7 @@ class StockbitClient:
                     'ticker': ticker,
                     'date': date
                 }
-                
+
             except requests.Timeout:
                 if attempt < retry_count - 1:
                     time.sleep(DEFAULT_RETRY_BACKOFF ** attempt)
@@ -218,7 +206,7 @@ class StockbitClient:
                     'success': False,
                     'error': f'Request timeout after {retry_count} attempts'
                 }
-            
+
             except requests.RequestException as e:
                 if attempt < retry_count - 1:
                     time.sleep(DEFAULT_RETRY_BACKOFF ** attempt)
@@ -227,12 +215,12 @@ class StockbitClient:
                     'success': False,
                     'error': f'Request failed: {str(e)}'
                 }
-        
+
         return {
             'success': False,
             'error': 'Unknown error after all retry attempts'
         }
-    
+
     def fetch_running_trade(
         self,
         ticker: str,
@@ -241,50 +229,53 @@ class StockbitClient:
         retry_count: int = DEFAULT_RETRY_COUNT,
         progress_callback: Optional[callable] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
+        resume_trade_number: Optional[int] = None,
+        initial_records: int = 0,
+        initial_pages: int = 0,
+        page_callback: Optional[Callable[[List[Dict[str, Any]], Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         """
-        Fetch ALL running trade data for a ticker on a specific date
-        Paginates through all pages using trade_number
-        
-        Args:
-            ticker: Stock symbol (e.g., 'BIRD')
-            date: Date in YYYY-MM-DD format
-            limit: Max records to fetch per page (default 50)
-            retry_count: Number of retry attempts per page
-            progress_callback: Optional callback(page, total_records) for progress updates
-            cancel_check: If set, called before each page; return True to stop early (job paused/cancelled)
-        
-        Returns:
-            Dict with success status, all data combined, and error info
+        Fetch all running trade data for a ticker on a specific date.
         """
         logger.info(f"Fetching ALL trades for {ticker} on {date}")
-        
-        all_trades = []
-        page = 1
-        last_trade_number = None
-        # set when we break out of a successful pagination path (not fetch_interrupted)
+
+        all_trades: List[Dict[str, Any]] = []
+        total_records = max(0, int(initial_records or 0))
+        successful_pages = max(0, int(initial_pages or 0))
+        page = max(1, successful_pages + 1)
+        last_trade_number = resume_trade_number
         end_reason: Optional[str] = None
-        # a short page doesn't always mean "we're at the end" — if the follow-up with trade_number
-        # is empty, then we're done; if it has rows, keep going
         short_page_awaiting_confirm = False
+        page1_fingerprint: Optional[str] = None
+        last_checkpoint: Dict[str, Any] = {
+            'resume_trade_number': resume_trade_number,
+            'checkpoint_pages_fetched': successful_pages,
+            'checkpoint_records_fetched': total_records,
+            'checkpoint_first_trade_number': None,
+            'checkpoint_last_trade_number': resume_trade_number,
+            'checkpoint_first_time': None,
+            'checkpoint_last_time': None,
+            'page1_fingerprint': None,
+        }
 
         while True:
-            # bail if the job manager says we're done (pause/cancel) — checked before hitting the API
             if cancel_check and cancel_check():
                 logger.info(
-                    f"Fetch stopped by cancel_check for {ticker} {date} after {len(all_trades)} record(s)"
+                    f"Fetch stopped by cancel_check for {ticker} {date} after {total_records} record(s)"
                 )
-                if all_trades:
+                if successful_pages > int(initial_pages or 0):
                     return {
                         'success': True,
                         'cancelled': True,
                         'data': all_trades,
-                        'count': len(all_trades),
+                        'count': total_records,
                         'ticker': ticker,
                         'date': date,
-                        'pages_fetched': max(0, page - 1),
+                        'pages_fetched': successful_pages,
+                        'successful_pages_fetched': successful_pages,
                         'partial': True,
                         'end_reason': FetchEndReason.CANCELLED_PARTIAL,
+                        **last_checkpoint,
                     }
                 return {
                     'success': False,
@@ -293,15 +284,14 @@ class StockbitClient:
                     'ticker': ticker,
                     'date': date,
                     'end_reason': 'cancelled',
+                    **last_checkpoint,
                 }
 
-            # report progress
             if progress_callback:
-                progress_callback(page, len(all_trades))
-            
-            # fetch a page
+                progress_callback(page, total_records)
+
             logger.info(f"Fetching page {page} for {ticker} {date} (last_trade_number: {last_trade_number})")
-            
+
             result = self._fetch_page(
                 ticker=ticker,
                 date=date,
@@ -309,31 +299,31 @@ class StockbitClient:
                 trade_number=last_trade_number,
                 retry_count=retry_count
             )
-            
-            # check for errors
+
             if not result.get('success'):
-                # 429 — don't pretend it's a generic interrupted fetch; jobs layer handles per-task wait
                 if result.get('rate_limited'):
                     err = result.get('error', 'Rate limited (429)')
                     retry_after = result.get('retry_after_seconds', RATE_LIMIT_FALLBACK_SECONDS)
-                    if all_trades:
+                    if successful_pages > int(initial_pages or 0):
                         logger.warning(
-                            f"429 on page {page} for {ticker} {date} after {len(all_trades)} trades — per-task wait "
+                            f"429 on page {page} for {ticker} {date} after {total_records} trades — per-task wait "
                             f"(retry_after={retry_after})"
                         )
                         return {
                             'success': False,
                             'partial': True,
                             'data': all_trades,
-                            'count': len(all_trades),
+                            'count': total_records,
                             'ticker': ticker,
                             'date': date,
-                            'pages_fetched': max(0, page - 1),
+                            'pages_fetched': successful_pages,
+                            'successful_pages_fetched': successful_pages,
                             'error': err,
                             'end_reason': FetchEndReason.RATE_LIMITED,
                             'rate_limited': True,
                             'retry_after_seconds': retry_after,
                             'status_code': result.get('status_code', 429),
+                            **last_checkpoint,
                         }
                     return {
                         'success': False,
@@ -343,72 +333,84 @@ class StockbitClient:
                         'rate_limited': True,
                         'retry_after_seconds': retry_after,
                         'status_code': result.get('status_code', 429),
+                        **last_checkpoint,
                     }
 
-                # if we already have some data, this is NOT a complete day — caller must retry, not mark COMPLETED
-                if all_trades:
+                if successful_pages > int(initial_pages or 0):
                     err = result.get('error', 'Unknown fetch error')
                     logger.warning(
-                        f"Error on page {page} for {ticker} {date} after {len(all_trades)} trades in memory — "
+                        f"Error on page {page} for {ticker} {date} after {total_records} trades in memory — "
                         f"{err} (end_reason={FetchEndReason.FETCH_INTERRUPTED})"
                     )
                     out = {
                         'success': False,
                         'partial': True,
                         'data': all_trades,
-                        'count': len(all_trades),
+                        'count': total_records,
                         'ticker': ticker,
                         'date': date,
-                        'pages_fetched': max(0, page - 1),
+                        'pages_fetched': successful_pages,
+                        'successful_pages_fetched': successful_pages,
                         'error': err,
                         'end_reason': FetchEndReason.FETCH_INTERRUPTED,
+                        **last_checkpoint,
                     }
-                    for key in (
-                        'requires_login',
-                        'captcha_required',
-                        'status_code',
-                    ):
+                    for key in ('requires_login', 'captcha_required', 'status_code'):
                         if key in result:
                             out[key] = result[key]
                     return out
-                # no data yet, return the error as-is
-                return result
-            
-            # extract trades from this page
+                out = result.copy()
+                out.update(last_checkpoint)
+                return out
+
             page_trades = result.get('data', [])
-            
-            # no more data on this request
+
             if not page_trades:
-                # n+1 probe after a short page: API returns [] when there is nothing older — that is a normal end
                 if short_page_awaiting_confirm:
                     end_reason = FetchEndReason.OK_SHORT_PAGE
                     logger.info(
                         f"Probe page {page} after short page: empty — confirmed no more data ({end_reason}). "
-                        f"Total collected: {len(all_trades)}"
+                        f"Total collected: {total_records}"
                     )
                 else:
                     end_reason = FetchEndReason.OK_EMPTY_PAGE
                     logger.info(
-                        f"No more trades on page {page} ({end_reason}). Total collected: {len(all_trades)}"
+                        f"No more trades on page {page} ({end_reason}). Total collected: {total_records}"
                     )
                 break
 
-            # n+1 check returned more rows — day wasn't finished at the short page
             if short_page_awaiting_confirm:
                 short_page_awaiting_confirm = False
 
-            # add to our collection
             all_trades.extend(page_trades)
+            total_records += len(page_trades)
+            successful_pages += 1
 
-            # get earliest timestamp from this page for monitoring
+            if page1_fingerprint is None:
+                page1_fingerprint = build_page_fingerprint(page_trades)
+
+            first_trade = page_trades[0]
             last_trade = page_trades[-1]
             earliest_time = last_trade.get('time', 'N/A')
 
             logger.info(
-                f"Page {page}: got {len(page_trades)} trades. Total: {len(all_trades)} | Earliest: {earliest_time}"
+                f"Page {page}: got {len(page_trades)} trades. Total: {total_records} | Earliest: {earliest_time}"
             )
 
-            # check if we've reached 09:00 - stop collecting before market open (applies to full or short pages)
+            last_checkpoint = {
+                'resume_trade_number': last_trade.get('trade_number'),
+                'checkpoint_pages_fetched': successful_pages,
+                'checkpoint_records_fetched': total_records,
+                'checkpoint_first_trade_number': first_trade.get('trade_number'),
+                'checkpoint_last_trade_number': last_trade.get('trade_number'),
+                'checkpoint_first_time': first_trade.get('time'),
+                'checkpoint_last_time': last_trade.get('time'),
+                'page1_fingerprint': page1_fingerprint,
+            }
+
+            if page_callback:
+                page_callback(page_trades, last_checkpoint.copy())
+
             trade_time = last_trade.get('time', '')
             if trade_time and trade_time <= '09:00:00':
                 end_reason = FetchEndReason.OK_BEFORE_MARKET_OPEN
@@ -427,7 +429,6 @@ class StockbitClient:
             last_trade_number = last_trade['trade_number']
             logger.info(f"Next pagination will use trade_number: {last_trade_number}")
 
-            # fewer than limit might still have older trades — one more page will tell us
             if len(page_trades) < limit:
                 short_page_awaiting_confirm = True
                 logger.info(
@@ -436,10 +437,8 @@ class StockbitClient:
                 )
 
             page += 1
-
-            # small delay between pages to be nice to the API
             time.sleep(0.5)
-        
+
         if end_reason is None:
             logger.error(
                 f"Internal bug: pagination loop exited for {ticker} {date} but end_reason was not set"
@@ -450,21 +449,23 @@ class StockbitClient:
                 "ticker": ticker,
                 "date": date,
                 "end_reason": "internal_bug_no_end_reason",
+                **last_checkpoint,
             }
 
         logger.info(
-            f"[OK] Completed fetching {ticker} {date}: {len(all_trades)} total trades, "
-            f"pages_fetched={page}, end_reason={end_reason}"
+            f"[OK] Completed fetching {ticker} {date}: {total_records} total trades, "
+            f"pages_fetched={successful_pages}, end_reason={end_reason}"
         )
 
         return {
             'success': True,
             'data': all_trades,
-            'count': len(all_trades),
+            'count': total_records,
             'ticker': ticker,
             'date': date,
-            'pages_fetched': page,
+            'pages_fetched': successful_pages,
+            'successful_pages_fetched': successful_pages,
             'end_reason': end_reason,
             'partial': False,
+            **last_checkpoint,
         }
-

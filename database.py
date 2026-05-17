@@ -52,6 +52,14 @@ class JobDatabase:
         self._add_column_if_missing(cursor, 'tasks', 'last_error_at', 'last_error_at TEXT')
         self._add_column_if_missing(cursor, 'tasks', 'updated_at', 'updated_at TEXT')
         self._add_column_if_missing(cursor, 'tasks', 'active_worker_id', 'active_worker_id TEXT')
+        self._add_column_if_missing(cursor, 'tasks', 'resume_trade_number', 'resume_trade_number INTEGER')
+        self._add_column_if_missing(cursor, 'tasks', 'checkpoint_pages_fetched', 'checkpoint_pages_fetched INTEGER DEFAULT 0')
+        self._add_column_if_missing(cursor, 'tasks', 'checkpoint_records_fetched', 'checkpoint_records_fetched INTEGER DEFAULT 0')
+        self._add_column_if_missing(cursor, 'tasks', 'checkpoint_first_trade_number', 'checkpoint_first_trade_number INTEGER')
+        self._add_column_if_missing(cursor, 'tasks', 'checkpoint_last_trade_number', 'checkpoint_last_trade_number INTEGER')
+        self._add_column_if_missing(cursor, 'tasks', 'checkpoint_first_time', 'checkpoint_first_time TEXT')
+        self._add_column_if_missing(cursor, 'tasks', 'checkpoint_last_time', 'checkpoint_last_time TEXT')
+        self._add_column_if_missing(cursor, 'tasks', 'page1_fingerprint', 'page1_fingerprint TEXT')
 
     def _ensure_task_unique(self, cursor):
         """One row per (job_id, ticker, date) so upserts actually replace."""
@@ -264,8 +272,11 @@ class JobDatabase:
                         job_id, ticker, date, status, error, records_fetched, attempts,
                         pages_fetched, current_page, end_reason, skip_reason,
                         retry_after_at, defer_reason, blocked_reason, rate_limit_count,
-                        last_error_at, updated_at, active_worker_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        last_error_at, updated_at, active_worker_id, resume_trade_number,
+                        checkpoint_pages_fetched, checkpoint_records_fetched,
+                        checkpoint_first_trade_number, checkpoint_last_trade_number,
+                        checkpoint_first_time, checkpoint_last_time, page1_fingerprint
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(job_id, ticker, date) DO UPDATE SET
                         status = excluded.status,
                         error = excluded.error,
@@ -281,7 +292,15 @@ class JobDatabase:
                         rate_limit_count = excluded.rate_limit_count,
                         last_error_at = excluded.last_error_at,
                         updated_at = excluded.updated_at,
-                        active_worker_id = excluded.active_worker_id
+                        active_worker_id = excluded.active_worker_id,
+                        resume_trade_number = excluded.resume_trade_number,
+                        checkpoint_pages_fetched = excluded.checkpoint_pages_fetched,
+                        checkpoint_records_fetched = excluded.checkpoint_records_fetched,
+                        checkpoint_first_trade_number = excluded.checkpoint_first_trade_number,
+                        checkpoint_last_trade_number = excluded.checkpoint_last_trade_number,
+                        checkpoint_first_time = excluded.checkpoint_first_time,
+                        checkpoint_last_time = excluded.checkpoint_last_time,
+                        page1_fingerprint = excluded.page1_fingerprint
                 ''', (
                     job_id,
                     task_data['ticker'],
@@ -301,6 +320,14 @@ class JobDatabase:
                     task_data.get('last_error_at'),
                     task_data.get('updated_at', now_wib().isoformat()),
                     task_data.get('active_worker_id'),
+                    task_data.get('resume_trade_number'),
+                    task_data.get('checkpoint_pages_fetched', 0),
+                    task_data.get('checkpoint_records_fetched', 0),
+                    task_data.get('checkpoint_first_trade_number'),
+                    task_data.get('checkpoint_last_trade_number'),
+                    task_data.get('checkpoint_first_time'),
+                    task_data.get('checkpoint_last_time'),
+                    task_data.get('page1_fingerprint'),
                 ))
                 
                 conn.commit()

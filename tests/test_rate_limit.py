@@ -76,6 +76,11 @@ class JobManagerBase(unittest.TestCase):
     def make_manager(self):
         client = MagicMock()
         storage = MagicMock()
+        storage.get_filename.return_value = "dummy.csv"
+        storage.reset_task_stage.return_value = None
+        storage.discard_task_stage.return_value = None
+        storage.append_task_trades.return_value = {"success": True, "rows_written": 0}
+        storage.finalize_task_trades.return_value = {"success": True, "rows_written": 0}
         return JobManager(client, storage)
 
     def make_job(self, **overrides):
@@ -128,6 +133,23 @@ class TestJobManager429(JobManagerBase):
         job = self.make_job(tasks=[first, second])
         tasks = jm._dispatchable_tasks(job, {}, 1)
         self.assertEqual([t.date for t in tasks], ["2024-01-02"])
+
+    def test_same_ticker_inflight_blocks_parallel_dispatch(self):
+        jm = self.make_manager()
+        running = Task(ticker="A", date="2024-01-01", status=TaskStatus.RUNNING)
+        pending = Task(ticker="A", date="2024-01-02")
+        job = self.make_job(tasks=[running, pending])
+        inflight = {object(): running}
+        tasks = jm._dispatchable_tasks(job, inflight, 1)
+        self.assertEqual(tasks, [])
+
+    def test_different_tickers_can_dispatch_in_parallel(self):
+        jm = self.make_manager()
+        first = Task(ticker="A", date="2024-01-01")
+        second = Task(ticker="B", date="2024-01-01")
+        job = self.make_job(tickers=["A", "B"], tasks=[first, second])
+        tasks = jm._dispatchable_tasks(job, {}, 2)
+        self.assertEqual([(t.ticker, t.date) for t in tasks], [("A", "2024-01-01"), ("B", "2024-01-01")])
 
     def test_pause_on_rate_limit_blocks_new_dispatch_during_cooldown(self):
         jm = self.make_manager()
@@ -279,3 +301,50 @@ class TestJobManager429(JobManagerBase):
         jm._process_task(job, job.tasks[0], "worker-1")
         self.assertEqual(job.tasks[0].status, TaskStatus.DEFERRED)
         self.assertIsNotNone(job.rate_limit_pause_until)
+
+    def test_rate_limit_partial_progress_is_preserved_for_resume(self):
+        jm = self.make_manager()
+        jm.client.fetch_running_trade.return_value = {
+            "success": False,
+            "error": "Rate limited (429)",
+            "rate_limited": True,
+            "retry_after_seconds": 12.0,
+            "count": 2100,
+            "checkpoint_pages_fetched": 42,
+            "checkpoint_records_fetched": 2100,
+            "resume_trade_number": 2384900,
+            "page1_fingerprint": "fp-1",
+            "partial": True,
+        }
+        task = Task(ticker="A", date="2024-01-01")
+        task.resume_trade_number = 2384900
+        task.checkpoint_pages_fetched = 42
+        task.checkpoint_records_fetched = 2100
+        task.page1_fingerprint = "fp-1"
+        job = self.make_job(tasks=[task])
+        jm._process_task(job, job.tasks[0], "worker-1")
+        self.assertEqual(job.tasks[0].status, TaskStatus.DEFERRED)
+        self.assertEqual(job.tasks[0].resume_trade_number, 2384900)
+        self.assertEqual(job.tasks[0].checkpoint_pages_fetched, 42)
+        self.assertEqual(job.tasks[0].checkpoint_records_fetched, 2100)
+
+    def test_regressed_completion_is_retried_not_completed(self):
+        jm = self.make_manager()
+        jm.client.fetch_running_trade.return_value = {
+            "success": True,
+            "count": 50,
+            "pages_fetched": 1,
+            "successful_pages_fetched": 1,
+            "end_reason": FetchEndReason.OK_EMPTY_PAGE,
+            "page1_fingerprint": "fp-1",
+        }
+        task = Task(ticker="A", date="2024-01-01")
+        task.resume_trade_number = 123
+        task.checkpoint_pages_fetched = 42
+        task.checkpoint_records_fetched = 2100
+        task.page1_fingerprint = "fp-1"
+        job = self.make_job(tasks=[task])
+        jm._process_task(job, job.tasks[0], "worker-1")
+        self.assertEqual(job.tasks[0].status, TaskStatus.DEFERRED)
+        self.assertIn("checkpoint 2100", job.tasks[0].error)
+        self.assertEqual(job.tasks[0].defer_reason, "cursor_regression")
